@@ -1,0 +1,232 @@
+:root {
+  color-scheme: light;
+  background: #f8f8f4;
+  color: #171717;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #f8f8f4;
+}
+
+button,
+input,
+output {
+  font: inherit;
+}
+
+.toolShell {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  min-height: 560px;
+  overflow: hidden;
+  background: #f8f8f4;
+}
+
+.canvasHost {
+  position: absolute;
+  inset: 0;
+}
+
+.canvasHost canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+  cursor: crosshair;
+  filter: contrast(1.04) saturate(1.06);
+}
+
+.controlBar {
+  position: fixed;
+  z-index: 2;
+  top: 18px;
+  left: 18px;
+  right: 18px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 920px;
+  padding: 10px;
+  border: 1px solid rgba(24, 24, 24, 0.16);
+  border-radius: 8px;
+  background: rgba(255, 255, 252, 0.9);
+  box-shadow: 0 12px 34px rgba(20, 20, 20, 0.1);
+  backdrop-filter: blur(12px);
+}
+
+.textForm {
+  display: flex;
+  min-width: 300px;
+  gap: 8px;
+}
+
+.textForm input {
+  width: min(38vw, 310px);
+  min-width: 150px;
+  height: 36px;
+  border: 1px solid rgba(24, 24, 24, 0.2);
+  border-radius: 6px;
+  padding: 0 11px;
+  outline: none;
+  background: rgba(255, 255, 255, 0.96);
+  color: #171717;
+}
+
+.textForm input:focus {
+  border-color: rgba(26, 86, 168, 0.72);
+  box-shadow: 0 0 0 3px rgba(26, 86, 168, 0.14);
+}
+
+button {
+  height: 36px;
+  border: 1px solid rgba(24, 24, 24, 0.22);
+  border-radius: 6px;
+  padding: 0 12px;
+  background: #171717;
+  color: #ffffff;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #313131;
+}
+
+.modeToggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  height: 36px;
+  padding: 3px;
+  border: 1px solid rgba(24, 24, 24, 0.18);
+  border-radius: 8px;
+  background: rgba(238, 238, 232, 0.92);
+}
+
+.modeToggle button {
+  height: 28px;
+  min-width: 72px;
+  border-color: transparent;
+  background: transparent;
+  color: rgba(23, 23, 23, 0.72);
+}
+
+.modeToggle button:hover {
+  background: rgba(26, 86, 168, 0.1);
+}
+
+.modeToggle button.active {
+  border-color: rgba(26, 86, 168, 0.4);
+  background: #1a56a8;
+  color: #ffffff;
+}
+
+.sizeControl {
+  display: grid;
+  grid-template-columns: auto 116px 34px;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid rgba(24, 24, 24, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 252, 0.78);
+  color: rgba(23, 23, 23, 0.78);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.sizeControl input {
+  width: 116px;
+  accent-color: #1a56a8;
+}
+
+.sizeControl output {
+  color: #171717;
+  text-align: right;
+}
+
+.colorControl {
+  display: grid;
+  grid-template-columns: auto 36px;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid rgba(24, 24, 24, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 252, 0.78);
+  color: rgba(23, 23, 23, 0.78);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.colorControl input {
+  width: 30px;
+  height: 24px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.hint {
+  min-width: 240px;
+  color: rgba(23, 23, 23, 0.58);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+@media (max-width: 720px) {
+  .toolShell {
+    min-height: 100vh;
+  }
+
+  .controlBar {
+    flex-wrap: wrap;
+    align-items: stretch;
+    top: 10px;
+    left: 10px;
+    right: 10px;
+  }
+
+  .textForm {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .modeToggle {
+    width: 100%;
+  }
+
+  .sizeControl {
+    grid-template-columns: auto 1fr 34px;
+    width: 100%;
+  }
+
+  .colorControl {
+    grid-template-columns: auto 36px;
+    width: 100%;
+  }
+
+  .sizeControl input {
+    width: 100%;
+  }
+
+  .textForm input {
+    width: 100%;
+  }
+
+  .hint {
+    min-width: 100%;
+  }
+}
