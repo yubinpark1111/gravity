@@ -86,6 +86,21 @@ const CONFIG = {
   interGroupCollisionMaxChecks: 5200,
 };
 
+const INITIAL_TEXT = "HELLO";
+const INITIAL_KOREAN_TEXT = "안녕하세요";
+const INITIAL_PRESET = {
+  size: 140,
+  letterSpacing: -3,
+  particleSize: 6,
+  density: 7700,
+  frontLineWidth: 1.2,
+  backLineWidth: 0.25,
+  frontColor: "#000000",
+  frontLineColor: "#ffffff",
+  backColor: "#ffffff",
+  backLineColor: "#000000",
+};
+
 function hexToRgb(hex: string) {
   const value = hex.replace("#", "");
   const parsed = Number.parseInt(value.length === 3 ? value.replace(/(.)/g, "$1$1") : value, 16);
@@ -97,13 +112,13 @@ export default function LivingDrawingTool() {
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const p5Ref = useRef<P5Instance | null>(null);
   const toolModeRef = useRef<ToolMode>("select");
-  const textSizeRef = useRef(160);
-  const letterSpacingRef = useRef(0);
-  const particleSizeRef = useRef(CONFIG.particleSize);
-  const particleLimitRef = useRef(CONFIG.maxParticles);
-  const particleColorRef = useRef("#1a1a1a");
-  const lineWidthRef = useRef(1);
-  const lineColorRef = useRef("#1a1a1a");
+  const textSizeRef = useRef(INITIAL_PRESET.size);
+  const letterSpacingRef = useRef(INITIAL_PRESET.letterSpacing);
+  const particleSizeRef = useRef(INITIAL_PRESET.particleSize);
+  const particleLimitRef = useRef(INITIAL_PRESET.density);
+  const particleColorRef = useRef(INITIAL_PRESET.frontColor);
+  const lineWidthRef = useRef(INITIAL_PRESET.frontLineWidth);
+  const lineColorRef = useRef(INITIAL_PRESET.frontLineColor);
   const randomSeedRef = useRef(0);
   const selectedGroupIdRef = useRef<number | null>(null);
   const selectedGroupIdsRef = useRef<number[]>([]);
@@ -130,14 +145,14 @@ export default function LivingDrawingTool() {
     deleteSelectedGroup: () => boolean;
     clearParticles: () => void;
   } | null>(null);
-  const [text, setText] = useState("HELLO");
-  const [textSize, setTextSizeState] = useState(160);
-  const [letterSpacing, setLetterSpacingState] = useState(0);
-  const [particleSize, setParticleSizeState] = useState(CONFIG.particleSize);
-  const [particleLimit, setParticleLimitState] = useState(CONFIG.maxParticles);
-  const [particleColor, setParticleColorState] = useState("#1a1a1a");
-  const [lineWidth, setLineWidthState] = useState(1);
-  const [lineColor, setLineColorState] = useState("#1a1a1a");
+  const [text, setText] = useState(INITIAL_TEXT);
+  const [textSize, setTextSizeState] = useState(INITIAL_PRESET.size);
+  const [letterSpacing, setLetterSpacingState] = useState(INITIAL_PRESET.letterSpacing);
+  const [particleSize, setParticleSizeState] = useState(INITIAL_PRESET.particleSize);
+  const [particleLimit, setParticleLimitState] = useState(INITIAL_PRESET.density);
+  const [particleColor, setParticleColorState] = useState(INITIAL_PRESET.frontColor);
+  const [lineWidth, setLineWidthState] = useState(INITIAL_PRESET.frontLineWidth);
+  const [lineColor, setLineColorState] = useState(INITIAL_PRESET.frontLineColor);
   const [randomSeed, setRandomSeedState] = useState(0);
   const [toolMode, setToolModeState] = useState<ToolMode>("select");
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
@@ -192,7 +207,7 @@ export default function LivingDrawingTool() {
           p.colorMode(p.RGB, 255, 255, 255, 255);
           p.noFill();
           grainLayer = makeGrainLayer();
-          addTextParticles("HELLO", p.width * 0.5, p.height * 0.49, textSizeRef.current, false);
+          addInitialTextPreset();
 
           apiRef.current = {
             addTextParticles: (value: string, size: number) => {
@@ -508,6 +523,95 @@ export default function LivingDrawingTool() {
             ),
           ];
           if (selectAfter) selectGroup(groupId);
+        }
+
+        function addInitialTextPreset() {
+          const centerX = p.width * 0.56;
+          const centerY = p.height * 0.55;
+          addStyledTextParticles({
+            value: INITIAL_KOREAN_TEXT,
+            centerX,
+            centerY,
+            size: INITIAL_PRESET.size,
+            letterSpacing: INITIAL_PRESET.letterSpacing,
+            particleSize: INITIAL_PRESET.particleSize,
+            density: INITIAL_PRESET.density,
+            color: INITIAL_PRESET.backColor,
+            lineWidth: INITIAL_PRESET.backLineWidth,
+            lineColor: INITIAL_PRESET.backLineColor,
+            randomSeed: 0,
+          });
+          addStyledTextParticles({
+            value: INITIAL_TEXT,
+            centerX: centerX + 2,
+            centerY: centerY + 56,
+            size: INITIAL_PRESET.size,
+            letterSpacing: INITIAL_PRESET.letterSpacing,
+            particleSize: INITIAL_PRESET.particleSize,
+            density: INITIAL_PRESET.density,
+            color: INITIAL_PRESET.frontColor,
+            lineWidth: INITIAL_PRESET.frontLineWidth,
+            lineColor: INITIAL_PRESET.frontLineColor,
+            randomSeed: 0,
+          });
+        }
+
+        function addStyledTextParticles({
+          value,
+          centerX,
+          centerY,
+          size,
+          letterSpacing,
+          particleSize,
+          density,
+          color,
+          lineWidth,
+          lineColor,
+          randomSeed,
+        }: {
+          value: string;
+          centerX: number;
+          centerY: number;
+          size: number;
+          letterSpacing: number;
+          particleSize: number;
+          density: number;
+          color: string;
+          lineWidth: number;
+          lineColor: string;
+          randomSeed: number;
+        }) {
+          const groupId = nextGroupId;
+          nextGroupId += 1;
+          groups.push({
+            id: groupId,
+            type: "text",
+            text: value,
+            x: centerX,
+            y: centerY,
+            size,
+            particleSize,
+            color,
+            lineWidth,
+            lineColor,
+            randomSeed,
+            density,
+            letterSpacing,
+          });
+          particles = [
+            ...particles,
+            ...buildTextParticles(
+              value,
+              centerX,
+              centerY,
+              size,
+              groupId,
+              density,
+              randomSeed,
+              0,
+              letterSpacing,
+            ),
+          ];
         }
 
         function addImageParticles(dataUrl: string) {
