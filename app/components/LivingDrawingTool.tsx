@@ -10,6 +10,7 @@ type ParticleType = "text" | "drawing" | "image";
 type ToolMode = "select" | "draw" | "attract";
 type TransformMode = "none" | "move" | "scale" | "rotate";
 type CanvasRatio = "1:1" | "4:3" | "3:4" | "16:9" | "9:16";
+type TextFontId = "sans" | "serif" | "baskerville" | "didot" | "slab" | "script" | "brush" | "mono";
 
 type Particle = {
   x: number;
@@ -47,6 +48,7 @@ type ObjectGroup = {
   text?: string;
   size?: number;
   letterSpacing?: number;
+  fontId?: TextFontId;
   path?: Point[];
   imageDataUrl?: string;
   imageElement?: HTMLImageElement;
@@ -103,11 +105,14 @@ const CONFIG = {
   interGroupCollisionMaxChecks: 5200,
 };
 
-const INITIAL_TEXT = "HELLO";
+const INITIAL_TEXT = "Hello";
 const INITIAL_KOREAN_TEXT = "안녕하세요";
 const INITIAL_PRESET = {
   size: 140,
-  letterSpacing: -3,
+  backLetterSpacing: -3,
+  frontLetterSpacing: -4,
+  backFontId: "sans" as TextFontId,
+  frontFontId: "brush" as TextFontId,
   particleSize: 6,
   density: 7700,
   frontLineWidth: 1.2,
@@ -128,6 +133,21 @@ const CANVAS_RATIOS: Record<CanvasRatio, number> = {
 
 const MAX_UNDO_STEPS = 40;
 const PNG_EXPORT_PPI = 150;
+
+const TEXT_FONT_OPTIONS: Array<{ id: TextFontId; label: string; stack: string }> = [
+  { id: "sans", label: "Sans / Helvetica", stack: "Helvetica Neue, Helvetica, Arial, sans-serif" },
+  { id: "serif", label: "Serif / Georgia", stack: "Georgia, Times New Roman, serif" },
+  { id: "baskerville", label: "Baskerville", stack: "Baskerville, Georgia, serif" },
+  { id: "didot", label: "Didot / Bodoni", stack: "Didot, Bodoni 72, Times New Roman, serif" },
+  { id: "slab", label: "Slab / Rockwell", stack: "Rockwell, American Typewriter, Georgia, serif" },
+  { id: "script", label: "Script / Snell", stack: "Snell Roundhand, Apple Chancery, cursive" },
+  { id: "brush", label: "Brush Script", stack: "Brush Script MT, Apple Chancery, cursive" },
+  { id: "mono", label: "Mono / Courier", stack: "Courier New, Courier, monospace" },
+];
+
+function getTextFontStack(fontId: TextFontId) {
+  return TEXT_FONT_OPTIONS.find((font) => font.id === fontId)?.stack ?? TEXT_FONT_OPTIONS[0].stack;
+}
 
 function hexToRgb(hex: string) {
   const value = hex.replace("#", "");
@@ -225,7 +245,8 @@ export default function LivingDrawingTool() {
   const p5Ref = useRef<P5Instance | null>(null);
   const toolModeRef = useRef<ToolMode>("select");
   const textSizeRef = useRef(INITIAL_PRESET.size);
-  const letterSpacingRef = useRef(INITIAL_PRESET.letterSpacing);
+  const letterSpacingRef = useRef(INITIAL_PRESET.frontLetterSpacing);
+  const textFontRef = useRef<TextFontId>(INITIAL_PRESET.frontFontId);
   const particleSizeRef = useRef(INITIAL_PRESET.particleSize);
   const particleLimitRef = useRef(INITIAL_PRESET.density);
   const particleColorRef = useRef(INITIAL_PRESET.frontColor);
@@ -245,6 +266,7 @@ export default function LivingDrawingTool() {
     updateSelectedTextContent: (text: string) => boolean;
     updateSelectedTextSize: (size: number) => boolean;
     updateSelectedLetterSpacing: (spacing: number) => boolean;
+    updateSelectedFont: (fontId: TextFontId) => boolean;
     updateSelectedParticleSize: (size: number) => boolean;
     updateSelectedColor: (color: string) => boolean;
     updateSelectedLineWidth: (width: number) => boolean;
@@ -262,7 +284,8 @@ export default function LivingDrawingTool() {
   } | null>(null);
   const [text, setText] = useState(INITIAL_TEXT);
   const [textSize, setTextSizeState] = useState(INITIAL_PRESET.size);
-  const [letterSpacing, setLetterSpacingState] = useState(INITIAL_PRESET.letterSpacing);
+  const [letterSpacing, setLetterSpacingState] = useState(INITIAL_PRESET.frontLetterSpacing);
+  const [textFont, setTextFontState] = useState<TextFontId>(INITIAL_PRESET.frontFontId);
   const [particleSize, setParticleSizeState] = useState(INITIAL_PRESET.particleSize);
   const [particleLimit, setParticleLimitState] = useState(INITIAL_PRESET.density);
   const [particleColor, setParticleColorState] = useState(INITIAL_PRESET.frontColor);
@@ -362,6 +385,16 @@ export default function LivingDrawingTool() {
               pushUndoSnapshot();
               for (const group of selectedGroups) {
                 group.letterSpacing = spacing;
+                rebuildGroup(group);
+              }
+              return true;
+            },
+            updateSelectedFont: (fontId: TextFontId) => {
+              const selectedGroups = getSelectedGroups("text");
+              if (selectedGroups.length === 0) return false;
+              pushUndoSnapshot();
+              for (const group of selectedGroups) {
+                group.fontId = fontId;
                 rebuildGroup(group);
               }
               return true;
@@ -759,6 +792,7 @@ export default function LivingDrawingTool() {
             randomSeed: 0,
             density: particleLimitRef.current,
             letterSpacing: letterSpacingRef.current,
+            fontId: textFontRef.current,
           });
           particles = [
             ...particles,
@@ -772,6 +806,7 @@ export default function LivingDrawingTool() {
               0,
               0,
               letterSpacingRef.current,
+              textFontRef.current,
             ),
           ];
           if (selectAfter) selectGroup(groupId);
@@ -785,7 +820,8 @@ export default function LivingDrawingTool() {
             centerX,
             centerY,
             size: INITIAL_PRESET.size,
-            letterSpacing: INITIAL_PRESET.letterSpacing,
+            letterSpacing: INITIAL_PRESET.backLetterSpacing,
+            fontId: INITIAL_PRESET.backFontId,
             particleSize: INITIAL_PRESET.particleSize,
             density: INITIAL_PRESET.density,
             color: INITIAL_PRESET.backColor,
@@ -798,7 +834,8 @@ export default function LivingDrawingTool() {
             centerX: centerX + 2,
             centerY: centerY + 56,
             size: INITIAL_PRESET.size,
-            letterSpacing: INITIAL_PRESET.letterSpacing,
+            letterSpacing: INITIAL_PRESET.frontLetterSpacing,
+            fontId: INITIAL_PRESET.frontFontId,
             particleSize: INITIAL_PRESET.particleSize,
             density: INITIAL_PRESET.density,
             color: INITIAL_PRESET.frontColor,
@@ -814,6 +851,7 @@ export default function LivingDrawingTool() {
           centerY,
           size,
           letterSpacing,
+          fontId,
           particleSize,
           density,
           color,
@@ -826,6 +864,7 @@ export default function LivingDrawingTool() {
           centerY: number;
           size: number;
           letterSpacing: number;
+          fontId: TextFontId;
           particleSize: number;
           density: number;
           color: string;
@@ -849,6 +888,7 @@ export default function LivingDrawingTool() {
             randomSeed,
             density,
             letterSpacing,
+            fontId,
           });
           particles = [
             ...particles,
@@ -862,6 +902,7 @@ export default function LivingDrawingTool() {
               randomSeed,
               0,
               letterSpacing,
+              fontId,
             ),
           ];
         }
@@ -923,6 +964,7 @@ export default function LivingDrawingTool() {
           randomSeed = 0,
           rotation = 0,
           letterSpacing = 0,
+          fontId: TextFontId = INITIAL_PRESET.frontFontId,
         ) {
           const buffer = document.createElement("canvas");
           buffer.width = Math.max(420, p.width, Math.ceil(value.length * (size + Math.abs(letterSpacing)) + size * 2));
@@ -934,7 +976,7 @@ export default function LivingDrawingTool() {
           context.fillStyle = "#fff";
           context.textAlign = "left";
           context.textBaseline = "middle";
-          context.font = `700 ${size}px Helvetica, Arial, sans-serif`;
+          context.font = `700 ${size}px ${getTextFontStack(fontId)}`;
           drawTextWithLetterSpacing(context, value, buffer.width / 2, buffer.height / 2, letterSpacing);
           const pixels = context.getImageData(0, 0, buffer.width, buffer.height).data;
 
@@ -1204,9 +1246,37 @@ export default function LivingDrawingTool() {
           const height = Math.max(1, Math.round(rect.height));
           if (targetCanvas.width !== width) targetCanvas.width = width;
           if (targetCanvas.height !== height) targetCanvas.height = height;
+          drawArtboardContentToContext(context, rect, width, height);
+        }
+
+        function drawArtboardContentToContext(context: CanvasRenderingContext2D, rect: Rect, width: number, height: number) {
+          const scaleX = width / rect.width;
+          const scaleY = height / rect.height;
+          context.save();
           context.fillStyle = "#f8f8f4";
           context.fillRect(0, 0, width, height);
-          context.drawImage(canvasElement, rect.x, rect.y, rect.width, rect.height, 0, 0, width, height);
+          context.scale(scaleX, scaleY);
+          context.translate(-rect.x, -rect.y);
+
+          for (const particle of particles) {
+            if (!isInsideRect(particle.x, particle.y, rect)) continue;
+            const fillColor = getParticleFillColor(particle);
+            const strokeColor = getParticleStrokeColor(particle);
+            const group = getGroupForParticle(particle);
+            const groupParticleSize = group?.particleSize ?? particleSizeRef.current;
+            const groupLineWidth = group?.lineWidth ?? lineWidthRef.current;
+            const diameter = Math.max(1, particle.size * groupParticleSize);
+
+            context.beginPath();
+            context.lineWidth = groupLineWidth;
+            context.strokeStyle = rgbToCanvasColor(strokeColor);
+            context.fillStyle = rgbToCanvasColor(fillColor);
+            context.arc(particle.x, particle.y, diameter / 2, 0, Math.PI * 2);
+            context.fill();
+            if (groupLineWidth > 0) context.stroke();
+          }
+
+          context.restore();
         }
 
         function roundSvg(value: number) {
@@ -1215,6 +1285,10 @@ export default function LivingDrawingTool() {
 
         function rgbToSvg(rgb: number[]) {
           return `rgb(${Math.round(rgb[0])},${Math.round(rgb[1])},${Math.round(rgb[2])})`;
+        }
+
+        function rgbToCanvasColor(rgb: number[]) {
+          return `rgb(${Math.round(rgb[0])}, ${Math.round(rgb[1])}, ${Math.round(rgb[2])})`;
         }
 
         function drawCurrentPath() {
@@ -1619,6 +1693,8 @@ export default function LivingDrawingTool() {
             setText(group.text);
             setTextSize(group.size);
             setLetterSpacing(group.letterSpacing ?? 0);
+            textFontRef.current = group.fontId ?? INITIAL_PRESET.frontFontId;
+            setTextFontState(group.fontId ?? INITIAL_PRESET.frontFontId);
           }
           setParticleSize(group.particleSize);
           setParticleColor(group.color);
@@ -1915,6 +1991,7 @@ export default function LivingDrawingTool() {
                 group.randomSeed,
                 group.rotation ?? 0,
                 group.letterSpacing ?? 0,
+                group.fontId ?? INITIAL_PRESET.frontFontId,
               ),
             ];
           }
@@ -1959,6 +2036,7 @@ export default function LivingDrawingTool() {
                   group.randomSeed,
                   group.rotation ?? 0,
                   group.letterSpacing ?? 0,
+                  group.fontId ?? INITIAL_PRESET.frontFontId,
                 ),
               );
             }
@@ -2259,6 +2337,14 @@ export default function LivingDrawingTool() {
     }
   }
 
+  function setTextFont(nextFont: TextFontId) {
+    textFontRef.current = nextFont;
+    setTextFontState(nextFont);
+    if (selectedGroupId && selectedGroupType === "text") {
+      apiRef.current?.updateSelectedFont(nextFont);
+    }
+  }
+
   function setParticleSize(nextSize: number) {
     if (!selectedGroupId) return;
     particleSizeRef.current = nextSize;
@@ -2370,6 +2456,20 @@ export default function LivingDrawingTool() {
               <option value="3:4">3:4</option>
               <option value="16:9">16:9</option>
               <option value="9:16">9:16</option>
+            </select>
+          </label>
+          <label className="selectControl fontSelectControl">
+            <span>폰트</span>
+            <select
+              aria-label="폰트"
+              value={textFont}
+              onChange={(event) => setTextFont(event.target.value as TextFontId)}
+            >
+              {TEXT_FONT_OPTIONS.map((font) => (
+                <option key={font.id} value={font.id}>
+                  {font.label}
+                </option>
+              ))}
             </select>
           </label>
           <label className="sizeControl">
@@ -2553,7 +2653,9 @@ export default function LivingDrawingTool() {
           <div className="helpPanel">
             <header className="helpHeader">
               <div>
-                <p>GRAVITY TOOL</p>
+                <p>
+                  GRAVITY TOOL <span>ver. 2026.05.25</span>
+                </p>
                 <h1>입자 드로잉 사용 방법</h1>
               </div>
               <button type="button" onClick={() => setIsHelpOpen(false)} aria-label="사용 방법 닫기">
@@ -2563,7 +2665,7 @@ export default function LivingDrawingTool() {
             <div className="helpGrid">
               <article>
                 <h2>01. 텍스트</h2>
-                <p>텍스트 입력 후 추가하면 글자가 입자 레이어로 생성됩니다. 선택 도구로 글자를 클릭하면 내용, 크기, 커닝, 밀도, 색상, 선 굵기를 수정할 수 있습니다.</p>
+                <p>텍스트 입력 후 추가하면 글자가 입자 레이어로 생성됩니다. 선택 도구로 글자를 클릭하면 내용, 폰트, 크기, 커닝, 밀도, 색상, 선 굵기를 수정할 수 있습니다.</p>
               </article>
               <article>
                 <h2>02. 선택 / 이동</h2>

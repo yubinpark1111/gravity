@@ -294,6 +294,10 @@ button:disabled {
   outline: 0;
 }
 
+.fontSelectControl select {
+  width: 148px;
+}
+
 .colorControl input {
   width: 28px;
   height: 20px;
@@ -451,6 +455,10 @@ button:disabled {
   margin: 0 0 8px;
   font-size: 11px;
   letter-spacing: 0;
+}
+
+.helpHeader p span {
+  margin-left: 10px;
 }
 
 .helpHeader h1 {
