@@ -113,15 +113,18 @@ const CONFIG = {
 };
 
 const INITIAL_TEXT = "Hello";
-const INITIAL_KOREAN_TEXT = "안녕하세요";
+const INITIAL_KOREAN_TEXT = "안녕하세요.";
 const INITIAL_PRESET = {
-  size: 150,
-  backLetterSpacing: -3,
+  backSize: 150,
+  frontSize: 150,
+  backLetterSpacing: -4,
   frontLetterSpacing: -4,
   backFontId: "sans" as TextFontId,
   frontFontId: "script" as TextFontId,
-  particleSize: 4,
-  density: 12000,
+  backParticleSize: 4,
+  frontParticleSize: 4,
+  backDensity: 12000,
+  frontDensity: 12000,
   frontLineWidth: 1.2,
   backLineWidth: 0.25,
   frontColor: "#000000",
@@ -259,11 +262,11 @@ export default function LivingDrawingTool() {
   const textEditInputRef = useRef<HTMLInputElement | null>(null);
   const p5Ref = useRef<P5Instance | null>(null);
   const toolModeRef = useRef<ToolMode>("select");
-  const textSizeRef = useRef(INITIAL_PRESET.size);
+  const textSizeRef = useRef(INITIAL_PRESET.frontSize);
   const letterSpacingRef = useRef(INITIAL_PRESET.frontLetterSpacing);
   const textFontRef = useRef<TextFontId>(INITIAL_PRESET.frontFontId);
-  const particleSizeRef = useRef(INITIAL_PRESET.particleSize);
-  const particleLimitRef = useRef(INITIAL_PRESET.density);
+  const particleSizeRef = useRef(INITIAL_PRESET.frontParticleSize);
+  const particleLimitRef = useRef(INITIAL_PRESET.frontDensity);
   const particleColorRef = useRef(INITIAL_PRESET.frontColor);
   const lineWidthRef = useRef(INITIAL_PRESET.frontLineWidth);
   const lineColorRef = useRef(INITIAL_PRESET.frontLineColor);
@@ -299,11 +302,11 @@ export default function LivingDrawingTool() {
     undo: () => boolean;
   } | null>(null);
   const [text, setText] = useState(INITIAL_TEXT);
-  const [textSize, setTextSizeState] = useState(INITIAL_PRESET.size);
+  const [textSize, setTextSizeState] = useState(INITIAL_PRESET.frontSize);
   const [letterSpacing, setLetterSpacingState] = useState(INITIAL_PRESET.frontLetterSpacing);
   const [textFont, setTextFontState] = useState<TextFontId>(INITIAL_PRESET.frontFontId);
-  const [particleSize, setParticleSizeState] = useState(INITIAL_PRESET.particleSize);
-  const [particleLimit, setParticleLimitState] = useState(INITIAL_PRESET.density);
+  const [particleSize, setParticleSizeState] = useState(INITIAL_PRESET.frontParticleSize);
+  const [particleLimit, setParticleLimitState] = useState(INITIAL_PRESET.frontDensity);
   const [particleColor, setParticleColorState] = useState(INITIAL_PRESET.frontColor);
   const [lineWidth, setLineWidthState] = useState(INITIAL_PRESET.frontLineWidth);
   const [lineColor, setLineColorState] = useState(INITIAL_PRESET.frontLineColor);
@@ -623,7 +626,7 @@ export default function LivingDrawingTool() {
               width: Math.max(120, box.width),
               height: Math.max(36, box.height),
               fontId: group.fontId ?? INITIAL_PRESET.frontFontId,
-              fontSize: Math.max(16, Math.min(group.size ?? INITIAL_PRESET.size, box.height * 0.9)),
+              fontSize: Math.max(16, Math.min(group.size ?? INITIAL_PRESET.frontSize, box.height * 0.9)),
               value: group.text ?? "",
             });
           }
@@ -870,11 +873,11 @@ export default function LivingDrawingTool() {
             value: INITIAL_KOREAN_TEXT,
             centerX,
             centerY,
-            size: INITIAL_PRESET.size,
+            size: INITIAL_PRESET.backSize,
             letterSpacing: INITIAL_PRESET.backLetterSpacing,
             fontId: INITIAL_PRESET.backFontId,
-            particleSize: INITIAL_PRESET.particleSize,
-            density: INITIAL_PRESET.density,
+            particleSize: INITIAL_PRESET.backParticleSize,
+            density: INITIAL_PRESET.backDensity,
             color: INITIAL_PRESET.backColor,
             lineWidth: INITIAL_PRESET.backLineWidth,
             lineColor: INITIAL_PRESET.backLineColor,
@@ -884,11 +887,11 @@ export default function LivingDrawingTool() {
             value: INITIAL_TEXT,
             centerX: centerX + 2,
             centerY: centerY + 56,
-            size: INITIAL_PRESET.size,
+            size: INITIAL_PRESET.frontSize,
             letterSpacing: INITIAL_PRESET.frontLetterSpacing,
             fontId: INITIAL_PRESET.frontFontId,
-            particleSize: INITIAL_PRESET.particleSize,
-            density: INITIAL_PRESET.density,
+            particleSize: INITIAL_PRESET.frontParticleSize,
+            density: INITIAL_PRESET.frontDensity,
             color: INITIAL_PRESET.frontColor,
             lineWidth: INITIAL_PRESET.frontLineWidth,
             lineColor: INITIAL_PRESET.frontLineColor,
