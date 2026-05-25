@@ -9,6 +9,7 @@ type ParticleState = "stable" | "disturbed" | "attracted" | "returning";
 type ParticleType = "text" | "drawing" | "image";
 type ToolMode = "select" | "draw" | "attract";
 type TransformMode = "none" | "move" | "scale" | "rotate";
+type CanvasRatio = "1:1" | "4:3" | "3:4" | "16:9" | "9:16";
 
 type Particle = {
   x: number;
@@ -53,6 +54,15 @@ type ObjectGroup = {
   imageHeight?: number;
 };
 
+type HistorySnapshot = {
+  groups: ObjectGroup[];
+  particles: Particle[];
+  nextGroupId: number;
+  selectedGroupIds: number[];
+  selectedGroupId: number | null;
+  canvasRatio: CanvasRatio;
+};
+
 type RecordingClip = {
   id: number;
   blob: Blob;
@@ -60,6 +70,13 @@ type RecordingClip = {
   filename: string;
   durationMs: number;
   size: number;
+};
+
+type Rect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 };
 
 const CONFIG = {
@@ -101,10 +118,105 @@ const INITIAL_PRESET = {
   backLineColor: "#000000",
 };
 
+const CANVAS_RATIOS: Record<CanvasRatio, number> = {
+  "1:1": 1,
+  "4:3": 4 / 3,
+  "3:4": 3 / 4,
+  "16:9": 16 / 9,
+  "9:16": 9 / 16,
+};
+
+const MAX_UNDO_STEPS = 40;
+const PNG_EXPORT_PPI = 150;
+
 function hexToRgb(hex: string) {
   const value = hex.replace("#", "");
   const parsed = Number.parseInt(value.length === 3 ? value.replace(/(.)/g, "$1$1") : value, 16);
   return [(parsed >> 16) & 255, (parsed >> 8) & 255, parsed & 255];
+}
+
+function writeUint32(target: Uint8Array, offset: number, value: number) {
+  target[offset] = (value >>> 24) & 255;
+  target[offset + 1] = (value >>> 16) & 255;
+  target[offset + 2] = (value >>> 8) & 255;
+  target[offset + 3] = value & 255;
+}
+
+function getCrcTable() {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n += 1) {
+    let c = n;
+    for (let k = 0; k < 8; k += 1) {
+      c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    }
+    table[n] = c >>> 0;
+  }
+  return table;
+}
+
+const PNG_CRC_TABLE = getCrcTable();
+
+function crc32(bytes: Uint8Array) {
+  let c = 0xffffffff;
+  for (const byte of bytes) {
+    c = PNG_CRC_TABLE[(c ^ byte) & 255] ^ (c >>> 8);
+  }
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function createPngPhysChunk(ppi: number) {
+  const pixelsPerMeter = Math.round(ppi / 0.0254);
+  const type = new TextEncoder().encode("pHYs");
+  const data = new Uint8Array(9);
+  writeUint32(data, 0, pixelsPerMeter);
+  writeUint32(data, 4, pixelsPerMeter);
+  data[8] = 1;
+
+  const chunk = new Uint8Array(4 + type.length + data.length + 4);
+  writeUint32(chunk, 0, data.length);
+  chunk.set(type, 4);
+  chunk.set(data, 8);
+  const crcInput = new Uint8Array(type.length + data.length);
+  crcInput.set(type, 0);
+  crcInput.set(data, type.length);
+  writeUint32(chunk, 8 + data.length, crc32(crcInput));
+  return chunk;
+}
+
+function addPngPpiMetadata(bytes: Uint8Array, ppi: number) {
+  const pngSignatureLength = 8;
+  const ihdrChunkLength = 4 + 4 + 13 + 4;
+  if (bytes.length < pngSignatureLength + ihdrChunkLength) return bytes;
+
+  const insertAt = pngSignatureLength + ihdrChunkLength;
+  const physChunk = createPngPhysChunk(ppi);
+  const next = new Uint8Array(bytes.length + physChunk.length);
+  next.set(bytes.slice(0, insertAt), 0);
+  next.set(physChunk, insertAt);
+  next.set(bytes.slice(insertAt), insertAt + physChunk.length);
+  return next;
+}
+
+type H264EncoderFactory = {
+  createH264MP4Encoder: () => Promise<any>;
+};
+
+let h264EncoderLoader: Promise<H264EncoderFactory> | null = null;
+
+function loadH264Encoder() {
+  const currentWindow = window as typeof window & { HME?: H264EncoderFactory };
+  if (currentWindow.HME) return Promise.resolve(currentWindow.HME);
+  if (h264EncoderLoader) return h264EncoderLoader;
+
+  h264EncoderLoader = fetch("/vendor/h264-mp4-encoder.web.js").then(async (response) => {
+    if (!response.ok) throw new Error("H264 encoder failed to load");
+    const source = await response.text();
+    const factory = new Function(`${source}; return HME;`)() as H264EncoderFactory;
+    currentWindow.HME = factory;
+    return factory;
+  });
+
+  return h264EncoderLoader;
 }
 
 export default function LivingDrawingTool() {
@@ -119,6 +231,7 @@ export default function LivingDrawingTool() {
   const particleColorRef = useRef(INITIAL_PRESET.frontColor);
   const lineWidthRef = useRef(INITIAL_PRESET.frontLineWidth);
   const lineColorRef = useRef(INITIAL_PRESET.frontLineColor);
+  const canvasRatioRef = useRef<CanvasRatio>("4:3");
   const randomSeedRef = useRef(0);
   const selectedGroupIdRef = useRef<number | null>(null);
   const selectedGroupIdsRef = useRef<number[]>([]);
@@ -138,12 +251,14 @@ export default function LivingDrawingTool() {
     updateSelectedLineColor: (color: string) => boolean;
     updateSelectedRandomSeed: (seed: number) => boolean;
     setParticleLimit: (limit: number) => void;
+    setCanvasRatio: (ratio: CanvasRatio) => void;
     exportPng: () => string | null;
     exportSvg: () => string;
-    startRecording: (onComplete: (blob: Blob, extension: string) => void) => boolean;
+    startRecording: (onComplete: (blob: Blob, extension: string) => void) => Promise<boolean>;
     stopRecording: () => void;
     deleteSelectedGroup: () => boolean;
     clearParticles: () => void;
+    undo: () => boolean;
   } | null>(null);
   const [text, setText] = useState(INITIAL_TEXT);
   const [textSize, setTextSizeState] = useState(INITIAL_PRESET.size);
@@ -153,6 +268,7 @@ export default function LivingDrawingTool() {
   const [particleColor, setParticleColorState] = useState(INITIAL_PRESET.frontColor);
   const [lineWidth, setLineWidthState] = useState(INITIAL_PRESET.frontLineWidth);
   const [lineColor, setLineColorState] = useState(INITIAL_PRESET.frontLineColor);
+  const [canvasRatio, setCanvasRatioState] = useState<CanvasRatio>("4:3");
   const [randomSeed, setRandomSeedState] = useState(0);
   const [toolMode, setToolModeState] = useState<ToolMode>("select");
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
@@ -161,6 +277,7 @@ export default function LivingDrawingTool() {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingElapsed, setRecordingElapsed] = useState(0);
   const [recordingClips, setRecordingClips] = useState<RecordingClip[]>([]);
+  const [isHelpOpen, setIsHelpOpen] = useState(true);
 
   useEffect(() => {
     let disposed = false;
@@ -176,6 +293,7 @@ export default function LivingDrawingTool() {
         let drawingPath: Point[] = [];
         let isPointerDown = false;
         let isMovingSelection = false;
+        let hasSelectionMoveSnapshot = false;
         let isBoxSelecting = false;
         let transformMode: TransformMode = "none";
         let activeTransformHandle: Point | null = null;
@@ -193,17 +311,20 @@ export default function LivingDrawingTool() {
         let mode: ParticleState = "stable";
         let grainLayer: ReturnType<P5Instance["createImage"]>;
         let canvasElement: HTMLCanvasElement | null = null;
-        let mediaRecorder: MediaRecorder | null = null;
-        let recordedChunks: Blob[] = [];
-        let recordingMimeType = "";
-        let recordingStream: MediaStream | null = null;
-        let recordingTrack: MediaStreamTrack | null = null;
+        let exportCanvasElement: HTMLCanvasElement | null = null;
+        let exportCanvasContext: CanvasRenderingContext2D | null = null;
+        let recordingFrameTimer: number | null = null;
+        let h264Encoder: any = null;
+        let mp4OnComplete: ((blob: Blob, extension: string) => void) | null = null;
+        let recordingFrameIndex = 0;
+        const recordingFps = 30;
+        let undoStack: HistorySnapshot[] = [];
 
         p.setup = () => {
           const canvas = p.createCanvas(p.windowWidth, p.windowHeight);
           canvas.parent(hostRef.current as HTMLDivElement);
           canvasElement = canvas.elt as HTMLCanvasElement;
-          p.pixelDensity(1);
+          p.pixelDensity(getDisplayPixelDensity());
           p.colorMode(p.RGB, 255, 255, 255, 255);
           p.noFill();
           grainLayer = makeGrainLayer();
@@ -227,6 +348,7 @@ export default function LivingDrawingTool() {
             updateSelectedTextSize: (size: number) => {
               const selectedGroups = getSelectedGroups("text");
               if (selectedGroups.length === 0) return false;
+              pushUndoSnapshot();
               for (const group of selectedGroups) {
                 if (!group.text) continue;
                 group.size = size;
@@ -237,6 +359,7 @@ export default function LivingDrawingTool() {
             updateSelectedLetterSpacing: (spacing: number) => {
               const selectedGroups = getSelectedGroups("text");
               if (selectedGroups.length === 0) return false;
+              pushUndoSnapshot();
               for (const group of selectedGroups) {
                 group.letterSpacing = spacing;
                 rebuildGroup(group);
@@ -246,6 +369,7 @@ export default function LivingDrawingTool() {
             updateSelectedParticleSize: (size: number) => {
               const selectedGroups = getSelectedGroups();
               if (selectedGroups.length === 0) return false;
+              pushUndoSnapshot();
               selectedGroups.forEach((group) => {
                 group.particleSize = size;
               });
@@ -254,6 +378,7 @@ export default function LivingDrawingTool() {
             updateSelectedColor: (color: string) => {
               const selectedGroups = getSelectedGroups();
               if (selectedGroups.length === 0) return false;
+              pushUndoSnapshot();
               selectedGroups.forEach((group) => {
                 group.color = color;
               });
@@ -262,6 +387,7 @@ export default function LivingDrawingTool() {
             updateSelectedLineWidth: (width: number) => {
               const selectedGroups = getSelectedGroups();
               if (selectedGroups.length === 0) return false;
+              pushUndoSnapshot();
               selectedGroups.forEach((group) => {
                 group.lineWidth = width;
               });
@@ -270,6 +396,7 @@ export default function LivingDrawingTool() {
             updateSelectedLineColor: (color: string) => {
               const selectedGroups = getSelectedGroups();
               if (selectedGroups.length === 0) return false;
+              pushUndoSnapshot();
               selectedGroups.forEach((group) => {
                 group.lineColor = color;
               });
@@ -278,6 +405,7 @@ export default function LivingDrawingTool() {
             updateSelectedRandomSeed: (seed: number) => {
               const selectedGroups = getSelectedGroups();
               if (selectedGroups.length === 0) return false;
+              pushUndoSnapshot();
               selectedGroups.forEach((group) => {
                 group.randomSeed = seed;
                 rebuildGroup(group);
@@ -287,92 +415,106 @@ export default function LivingDrawingTool() {
             setParticleLimit: (limit: number) => {
               const selectedGroups = getSelectedGroups();
               if (selectedGroups.length === 0) return;
+              pushUndoSnapshot();
               selectedGroups.forEach((group) => {
                 group.density = limit;
                 rebuildGroup(group);
               });
             },
+            setCanvasRatio: (ratio: CanvasRatio) => {
+              pushUndoSnapshot();
+              const previousRect = getArtboardRect();
+              canvasRatioRef.current = ratio;
+              transformArtworkBetweenArtboards(previousRect, getArtboardRect());
+            },
             exportPng: () => {
-              return canvasElement?.toDataURL("image/png") ?? null;
+              return exportCanvasImage()?.toDataURL("image/png") ?? null;
             },
             exportSvg: () => {
               return buildSvgExport();
             },
-            startRecording: (onComplete: (blob: Blob, extension: string) => void) => {
-              if (!canvasElement || typeof MediaRecorder === "undefined") return false;
-              if (mediaRecorder?.state === "recording") return false;
-
-              recordedChunks = [];
-              recordingMimeType = getRecordingMimeType();
-              if (!recordingMimeType) return false;
-              recordingStream = canvasElement.captureStream(30);
-              recordingTrack = recordingStream.getVideoTracks()[0] ?? null;
+            startRecording: async (onComplete: (blob: Blob, extension: string) => void) => {
+              if (!canvasElement || h264Encoder) return false;
+              const exportCanvas = exportCanvasImage();
+              if (!exportCanvas) return false;
+              exportCanvasElement = exportCanvas;
+              exportCanvasContext = exportCanvasElement.getContext("2d");
+              if (!exportCanvasContext) return false;
 
               try {
-                mediaRecorder = new MediaRecorder(recordingStream, {
-                  mimeType: recordingMimeType,
-                  videoBitsPerSecond: 8_000_000,
-                });
-              } catch {
-                mediaRecorder = null;
-                recordingStream.getTracks().forEach((track) => track.stop());
-                recordingStream = null;
-                recordingTrack = null;
+                const HME = await loadH264Encoder();
+                const encoder = await HME.createH264MP4Encoder();
+                encoder.width = Math.max(2, Math.floor(exportCanvasElement.width / 2) * 2);
+                encoder.height = Math.max(2, Math.floor(exportCanvasElement.height / 2) * 2);
+                encoder.frameRate = recordingFps;
+                encoder.kbps = 8000;
+                encoder.speed = 7;
+                encoder.groupOfPictures = recordingFps * 2;
+                encoder.initialize();
+                if (encoder.width !== exportCanvasElement.width || encoder.height !== exportCanvasElement.height) {
+                  exportCanvasElement.width = encoder.width;
+                  exportCanvasElement.height = encoder.height;
+                  exportCanvasContext = exportCanvasElement.getContext("2d");
+                  if (!exportCanvasContext) {
+                    encoder.delete();
+                    return false;
+                  }
+                }
+                h264Encoder = encoder;
+                mp4OnComplete = onComplete;
+              } catch (error) {
+                console.error(error);
+                h264Encoder = null;
+                mp4OnComplete = null;
+                exportCanvasElement = null;
+                exportCanvasContext = null;
                 return false;
               }
 
-              mediaRecorder.ondataavailable = (event) => {
-                if (event.data.size > 0) recordedChunks.push(event.data);
-              };
-              mediaRecorder.onstop = () => {
-                const mimeType = recordingMimeType || "video/webm";
-                const blob = new Blob(recordedChunks, { type: mimeType });
-                onComplete(blob, getRecordingExtension(mimeType));
-                recordedChunks = [];
-                recordingStream?.getTracks().forEach((track) => track.stop());
-                recordingStream = null;
-                recordingTrack = null;
-                mediaRecorder = null;
-              };
-              mediaRecorder.start(250);
-              requestRecordingFrame();
+              recordingFrameIndex = 0;
+              recordingFrameTimer = window.setInterval(() => {
+                copyArtboardToCanvas(exportCanvasElement, exportCanvasContext);
+                encodeMp4Frame();
+              }, 1000 / 30);
+              copyArtboardToCanvas(exportCanvasElement, exportCanvasContext);
+              encodeMp4Frame();
               return true;
             },
             stopRecording: () => {
-              if (mediaRecorder?.state === "recording") {
-                requestRecordingFrame();
-                mediaRecorder.requestData();
-                window.setTimeout(() => {
-                  if (mediaRecorder?.state === "recording") mediaRecorder.stop();
-                }, 120);
-              }
+              void finishMp4Recording();
             },
             deleteSelectedGroup: () => {
               return deleteSelectedGroup();
             },
             clearParticles: () => {
+              if (particles.length > 0 || groups.length > 0) pushUndoSnapshot();
               particles = [];
               groups = [];
               drawingPath = [];
               clearSelectedGroup();
             },
+            undo: () => undoLastAction(),
           };
         };
 
         p.draw = () => {
           drawAtmosphere();
+          drawArtboard();
           updateDrawing();
           updateParticles();
+          beginArtboardClip();
           drawParticles();
+          drawCurrentPath();
+          endArtboardClip();
           drawSelectionBox();
           drawMarqueeBox();
-          drawCurrentPath();
-          drawGrain();
-          requestRecordingFrame();
         };
 
         p.windowResized = () => {
+          const previousRect = getArtboardRect();
+          p.pixelDensity(getDisplayPixelDensity());
           p.resizeCanvas(p.windowWidth, p.windowHeight);
+          transformArtworkBetweenArtboards(previousRect, getArtboardRect());
           grainLayer = makeGrainLayer();
         };
 
@@ -386,6 +528,7 @@ export default function LivingDrawingTool() {
           drawingPath = toolModeRef.current === "draw" ? [pointerStart] : [];
           mode = toolModeRef.current === "attract" ? "disturbed" : "stable";
           isMovingSelection = false;
+          hasSelectionMoveSnapshot = false;
           isBoxSelecting = false;
           transformMode = "none";
 
@@ -447,6 +590,7 @@ export default function LivingDrawingTool() {
           }
           isPointerDown = false;
           isMovingSelection = false;
+          hasSelectionMoveSnapshot = false;
           if (transformMode !== "none") {
             transformMode = "none";
             activeTransformHandle = null;
@@ -464,33 +608,141 @@ export default function LivingDrawingTool() {
 
         function drawAtmosphere() {
           p.blendMode(p.BLEND);
-          p.background(248, 248, 244, CONFIG.trailAlpha);
+          p.background(235, 235, 230, CONFIG.trailAlpha);
         }
 
-        function getRecordingMimeType() {
-          const mimeTypes = [
-            "video/mp4;codecs=h264",
-            "video/mp4",
-            "video/webm;codecs=vp9",
-            "video/webm;codecs=vp8",
-            "video/webm",
-          ];
-
-          return mimeTypes.find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) ?? "";
+        function getDisplayPixelDensity() {
+          return Math.min(2, Math.max(1, window.devicePixelRatio || 1));
         }
 
-        function getRecordingExtension(mimeType: string) {
-          return mimeType.includes("mp4") ? "mp4" : "webm";
+        function getArtboardRect(): Rect {
+          const ratio = CANVAS_RATIOS[canvasRatioRef.current];
+          const panelClearance = p.width > 720 ? 360 : 24;
+          const availableX = panelClearance;
+          const availableWidth = Math.max(240, p.width - availableX - 40);
+          const availableHeight = Math.max(240, p.height - 96);
+          let width = availableWidth * 0.86;
+          let height = width / ratio;
+
+          if (height > availableHeight) {
+            height = availableHeight;
+            width = height * ratio;
+          }
+
+          return {
+            x: availableX + (availableWidth - width) / 2,
+            y: (p.height - height) / 2,
+            width,
+            height,
+          };
         }
 
-        function requestRecordingFrame() {
-          const track = recordingTrack as (MediaStreamTrack & { requestFrame?: () => void }) | null;
-          track?.requestFrame?.();
+        function drawArtboard() {
+          const rect = getArtboardRect();
+          p.push();
+          p.blendMode(p.BLEND);
+          p.noStroke();
+          p.fill(248, 248, 244);
+          p.rect(rect.x, rect.y, rect.width, rect.height);
+          p.pop();
+        }
+
+        function beginArtboardClip() {
+          const rect = getArtboardRect();
+          const context = p.drawingContext as CanvasRenderingContext2D;
+          context.save();
+          context.beginPath();
+          context.rect(rect.x, rect.y, rect.width, rect.height);
+          context.clip();
+        }
+
+        function endArtboardClip() {
+          const context = p.drawingContext as CanvasRenderingContext2D;
+          context.restore();
+        }
+
+        function transformArtworkBetweenArtboards(previousRect: Rect, nextRect: Rect) {
+          if (
+            previousRect.width <= 0 ||
+            previousRect.height <= 0 ||
+            nextRect.width <= 0 ||
+            nextRect.height <= 0
+          ) {
+            return;
+          }
+
+          const scaleX = nextRect.width / previousRect.width;
+          const scaleY = nextRect.height / previousRect.height;
+          const uniformScale = Math.sqrt(scaleX * scaleY);
+
+          for (const group of groups) {
+            const transformedCenter = mapPointToArtboard(group.x, group.y, previousRect, nextRect);
+            group.x = transformedCenter.x;
+            group.y = transformedCenter.y;
+            if (typeof group.size === "number") group.size = Math.max(1, group.size * uniformScale);
+            if (typeof group.imageWidth === "number") group.imageWidth = Math.max(1, group.imageWidth * scaleX);
+            if (typeof group.imageHeight === "number") group.imageHeight = Math.max(1, group.imageHeight * scaleY);
+            if (group.path) {
+              group.path = group.path.map((point) => mapPointToArtboard(point.x, point.y, previousRect, nextRect));
+            }
+          }
+
+          for (const particle of particles) {
+            const transformedHome = mapPointToArtboard(particle.homeX, particle.homeY, previousRect, nextRect);
+            const transformedCurrent = mapPointToArtboard(particle.x, particle.y, previousRect, nextRect);
+            particle.homeX = transformedHome.x;
+            particle.homeY = transformedHome.y;
+            particle.x = transformedCurrent.x;
+            particle.y = transformedCurrent.y;
+            particle.vx *= scaleX;
+            particle.vy *= scaleY;
+          }
+        }
+
+        function mapPointToArtboard(x: number, y: number, previousRect: Rect, nextRect: Rect) {
+          return {
+            x: nextRect.x + ((x - previousRect.x) / previousRect.width) * nextRect.width,
+            y: nextRect.y + ((y - previousRect.y) / previousRect.height) * nextRect.height,
+          };
+        }
+
+        function encodeMp4Frame() {
+          if (!h264Encoder || !exportCanvasElement || !exportCanvasContext) return;
+          const frame = exportCanvasContext.getImageData(0, 0, exportCanvasElement.width, exportCanvasElement.height);
+          h264Encoder.addFrameRgba(frame.data);
+          recordingFrameIndex += 1;
+        }
+
+        async function finishMp4Recording() {
+          const encoder = h264Encoder;
+          if (!encoder) return;
+          if (recordingFrameTimer !== null) {
+            window.clearInterval(recordingFrameTimer);
+            recordingFrameTimer = null;
+          }
+
+          try {
+            copyArtboardToCanvas(exportCanvasElement, exportCanvasContext);
+            encodeMp4Frame();
+            encoder.finalize();
+            const bytes = encoder.FS.readFile(encoder.outputFilename) as Uint8Array;
+            if (bytes.byteLength > 0 && mp4OnComplete) {
+              const output = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+              mp4OnComplete(new Blob([output], { type: "video/mp4" }), "mp4");
+            }
+          } finally {
+            encoder.delete();
+            h264Encoder = null;
+            mp4OnComplete = null;
+            exportCanvasElement = null;
+            exportCanvasContext = null;
+          }
         }
 
         function addTextParticles(value: string, centerX: number, centerY: number, size: number, selectAfter = true) {
           const textValue = value.trim();
           if (!textValue) return;
+          pushUndoSnapshot();
           const groupId = nextGroupId;
           nextGroupId += 1;
           groups.push({
@@ -526,8 +778,8 @@ export default function LivingDrawingTool() {
         }
 
         function addInitialTextPreset() {
-          const centerX = p.width * 0.56;
-          const centerY = p.height * 0.55;
+          const centerX = p.width * 0.6;
+          const centerY = p.height * 0.497;
           addStyledTextParticles({
             value: INITIAL_KOREAN_TEXT,
             centerX,
@@ -617,6 +869,7 @@ export default function LivingDrawingTool() {
         function addImageParticles(dataUrl: string) {
           const image = new Image();
           image.onload = () => {
+            pushUndoSnapshot();
             const groupId = nextGroupId;
             nextGroupId += 1;
             const maxDisplaySize = Math.min(p.width, p.height) * 0.62;
@@ -730,6 +983,7 @@ export default function LivingDrawingTool() {
           const group = groups.find((item) => item.id === groupId && item.type === "text");
           if (!group) return false;
 
+          pushUndoSnapshot();
           group.text = textValue;
           group.size = size;
           rebuildTextGroup(group);
@@ -739,6 +993,7 @@ export default function LivingDrawingTool() {
 
         function sampleDrawingPath(path: Point[]) {
           if (path.length < 2) return;
+          pushUndoSnapshot();
           const groupId = nextGroupId;
           nextGroupId += 1;
           groups.push({
@@ -900,7 +1155,9 @@ export default function LivingDrawingTool() {
         }
 
         function buildSvgExport() {
+          const rect = getArtboardRect();
           const circles = particles
+            .filter((particle) => isInsideRect(particle.x, particle.y, rect))
             .map((particle, index) => {
               const fillColor = getParticleFillColor(particle);
               const strokeColor = getParticleStrokeColor(particle);
@@ -908,16 +1165,48 @@ export default function LivingDrawingTool() {
               const groupParticleSize = group?.particleSize ?? particleSizeRef.current;
               const groupLineWidth = group?.lineWidth ?? lineWidthRef.current;
               const radius = Math.max(0.5, (particle.size * groupParticleSize) / 2);
-              return `<circle cx="${roundSvg(particle.x)}" cy="${roundSvg(particle.y)}" r="${roundSvg(radius)}" fill="${rgbToSvg(fillColor)}" stroke="${rgbToSvg(strokeColor)}" stroke-width="${roundSvg(groupLineWidth)}" />`;
+              return `<circle cx="${roundSvg(particle.x - rect.x)}" cy="${roundSvg(particle.y - rect.y)}" r="${roundSvg(radius)}" fill="${rgbToSvg(fillColor)}" stroke="${rgbToSvg(strokeColor)}" stroke-width="${roundSvg(groupLineWidth)}" />`;
             })
             .join("\n  ");
+          const width = Math.round(rect.width);
+          const height = Math.round(rect.height);
 
           return [
-            `<svg xmlns="http://www.w3.org/2000/svg" width="${p.width}" height="${p.height}" viewBox="0 0 ${p.width} ${p.height}">`,
+            `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
             `  <rect width="100%" height="100%" fill="#f8f8f4" />`,
             `  ${circles}`,
             `</svg>`,
           ].join("\n");
+        }
+
+        function isInsideRect(x: number, y: number, rect: Rect) {
+          return x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
+        }
+
+        function exportCanvasImage() {
+          const rect = getArtboardRect();
+          const exportCanvas = document.createElement("canvas");
+          exportCanvas.width = Math.max(1, Math.round(rect.width));
+          exportCanvas.height = Math.max(1, Math.round(rect.height));
+          const context = exportCanvas.getContext("2d");
+          if (!context) return null;
+          copyArtboardToCanvas(exportCanvas, context);
+          return exportCanvas;
+        }
+
+        function copyArtboardToCanvas(
+          targetCanvas: HTMLCanvasElement | null,
+          context: CanvasRenderingContext2D | null,
+        ) {
+          if (!canvasElement || !targetCanvas || !context) return;
+          const rect = getArtboardRect();
+          const width = Math.max(1, Math.round(rect.width));
+          const height = Math.max(1, Math.round(rect.height));
+          if (targetCanvas.width !== width) targetCanvas.width = width;
+          if (targetCanvas.height !== height) targetCanvas.height = height;
+          context.fillStyle = "#f8f8f4";
+          context.fillRect(0, 0, width, height);
+          context.drawImage(canvasElement, rect.x, rect.y, rect.width, rect.height, 0, 0, width, height);
         }
 
         function roundSvg(value: number) {
@@ -1281,7 +1570,7 @@ export default function LivingDrawingTool() {
         }
 
         function isInsideCanvas() {
-          return p.mouseX >= 0 && p.mouseX <= p.width && p.mouseY >= 0 && p.mouseY <= p.height;
+          return isInsideRect(p.mouseX, p.mouseY, getArtboardRect());
         }
 
         function isCanvasPointerEvent(event?: MouseEvent) {
@@ -1363,6 +1652,10 @@ export default function LivingDrawingTool() {
         function moveSelectedGroup(dx: number, dy: number) {
           const groupIds = selectedGroupIdsRef.current;
           if (groupIds.length === 0) return;
+          if (!hasSelectionMoveSnapshot) {
+            pushUndoSnapshot();
+            hasSelectionMoveSnapshot = true;
+          }
 
           for (const group of groups) {
             if (!groupIds.includes(group.id)) continue;
@@ -1389,6 +1682,7 @@ export default function LivingDrawingTool() {
           const groupIds = selectedGroupIdsRef.current;
           if (!bounds || groupIds.length === 0) return;
 
+          pushUndoSnapshot();
           transformMode = kind;
           activeTransformHandle = handlePoint;
           transformCenter = {
@@ -1467,6 +1761,62 @@ export default function LivingDrawingTool() {
           };
         }
 
+        function cloneParticle(particle: Particle): Particle {
+          return {
+            ...particle,
+            rgb: particle.rgb ? [...particle.rgb] : undefined,
+          };
+        }
+
+        function createHistorySnapshot(): HistorySnapshot {
+          return {
+            groups: groups.map((group) => cloneGroup(group)),
+            particles: particles.map((particle) => cloneParticle(particle)),
+            nextGroupId,
+            selectedGroupIds: [...selectedGroupIdsRef.current],
+            selectedGroupId: selectedGroupIdRef.current,
+            canvasRatio: canvasRatioRef.current,
+          };
+        }
+
+        function pushUndoSnapshot() {
+          undoStack.push(createHistorySnapshot());
+          if (undoStack.length > MAX_UNDO_STEPS) undoStack.shift();
+        }
+
+        function undoLastAction() {
+          const snapshot = undoStack.pop();
+          if (!snapshot) return false;
+
+          groups = snapshot.groups.map((group) => cloneGroup(group));
+          particles = snapshot.particles.map((particle) => cloneParticle(particle));
+          nextGroupId = snapshot.nextGroupId;
+          canvasRatioRef.current = snapshot.canvasRatio;
+          setCanvasRatioState(snapshot.canvasRatio);
+          drawingPath = [];
+          isPointerDown = false;
+          isMovingSelection = false;
+          hasSelectionMoveSnapshot = false;
+          isBoxSelecting = false;
+          transformMode = "none";
+          activeTransformHandle = null;
+          selectionBoxStart = null;
+          selectionBoxEnd = null;
+          mode = "returning";
+
+          const validIds = snapshot.selectedGroupIds.filter((id) => groups.some((group) => group.id === id));
+          if (validIds.length > 0) {
+            selectGroups(validIds);
+          } else if (snapshot.selectedGroupId && groups.some((group) => group.id === snapshot.selectedGroupId)) {
+            selectGroup(snapshot.selectedGroupId);
+          } else {
+            clearSelectedGroup();
+          }
+
+          for (const particle of particles) particle.state = "returning";
+          return true;
+        }
+
         function clearSelectedGroup() {
           selectedGroupIdsRef.current = [];
           selectedGroupIdRef.current = null;
@@ -1478,6 +1828,7 @@ export default function LivingDrawingTool() {
         function deleteSelectedGroup() {
           const groupIds = selectedGroupIdsRef.current;
           if (groupIds.length === 0) return false;
+          pushUndoSnapshot();
           particles = particles.filter((particle) => !particle.groupId || !groupIds.includes(particle.groupId));
           groups = groups.filter((group) => !groupIds.includes(group.id));
           clearSelectedGroup();
@@ -1664,7 +2015,6 @@ export default function LivingDrawingTool() {
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key !== "Backspace" && event.key !== "Delete") return;
       const target = event.target;
       if (
         target instanceof HTMLInputElement ||
@@ -1674,6 +2024,13 @@ export default function LivingDrawingTool() {
       ) {
         return;
       }
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && !event.shiftKey) {
+        if (apiRef.current?.undo()) event.preventDefault();
+        return;
+      }
+
+      if (event.key !== "Backspace" && event.key !== "Delete") return;
       if (!selectedGroupIdRef.current) return;
       event.preventDefault();
       deleteSelectedGroup();
@@ -1723,6 +2080,7 @@ export default function LivingDrawingTool() {
     extensions: string[],
     mimeType = blob.type || "application/octet-stream",
   ) {
+    const pickerMimeType = mimeType.split(";")[0] || "application/octet-stream";
     const filePicker = (
       window as typeof window & {
         showSaveFilePicker?: (options: {
@@ -1748,7 +2106,7 @@ export default function LivingDrawingTool() {
             {
               description,
               accept: {
-                [mimeType]: extensions,
+                [pickerMimeType]: extensions,
               },
             },
           ],
@@ -1787,7 +2145,10 @@ export default function LivingDrawingTool() {
     const dataUrl = apiRef.current?.exportPng();
     if (!dataUrl) return;
     const blob = await fetch(dataUrl).then((response) => response.blob());
-    await saveBlobAs(blob, `gravity-${Date.now()}.png`, "PNG Image", [".png"], "image/png");
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const ppiBytes = addPngPpiMetadata(bytes, PNG_EXPORT_PPI);
+    const pngBlob = new Blob([ppiBytes.buffer.slice(0) as ArrayBuffer], { type: "image/png" });
+    await saveBlobAs(pngBlob, `gravity-${Date.now()}.png`, "PNG Image", [".png"], "image/png");
   }
 
   async function exportSvg() {
@@ -1797,8 +2158,8 @@ export default function LivingDrawingTool() {
     await saveBlobAs(blob, `gravity-${Date.now()}.svg`, "SVG Image", [".svg"], "image/svg+xml");
   }
 
-  function startRecording() {
-    const started = apiRef.current?.startRecording((blob, extension) => {
+  async function startRecording() {
+    const started = await apiRef.current?.startRecording((blob, extension) => {
       const finishedAt = Date.now();
       if (blob.size === 0) {
         clearRecordingTimer();
@@ -1833,7 +2194,7 @@ export default function LivingDrawingTool() {
       setIsRecording(true);
       return;
     }
-    window.alert("이 브라우저에서 캔버스 녹화를 지원하지 않습니다.");
+    window.alert("이 브라우저에서 QuickTime 호환 MP4 인코딩을 지원하지 않습니다.");
   }
 
   function stopRecording() {
@@ -1861,6 +2222,15 @@ export default function LivingDrawingTool() {
   function setToolMode(nextMode: ToolMode) {
     toolModeRef.current = nextMode;
     setToolModeState(nextMode);
+  }
+
+  function setCanvasRatio(nextRatio: CanvasRatio) {
+    setCanvasRatioState(nextRatio);
+    if (apiRef.current) {
+      apiRef.current.setCanvasRatio(nextRatio);
+    } else {
+      canvasRatioRef.current = nextRatio;
+    }
   }
 
   function setTextSize(nextSize: number) {
@@ -1985,6 +2355,23 @@ export default function LivingDrawingTool() {
           <button type="button" className="importButton" onClick={() => imageInputRef.current?.click()}>
             사진 불러오기
           </button>
+          <button type="button" className="helpButton" onClick={() => setIsHelpOpen(true)}>
+            사용 방법
+          </button>
+          <label className="selectControl">
+            <span>캔버스</span>
+            <select
+              aria-label="캔버스 비율"
+              value={canvasRatio}
+              onChange={(event) => setCanvasRatio(event.target.value as CanvasRatio)}
+            >
+              <option value="1:1">1:1</option>
+              <option value="4:3">4:3</option>
+              <option value="3:4">3:4</option>
+              <option value="16:9">16:9</option>
+              <option value="9:16">9:16</option>
+            </select>
+          </label>
           <label className="sizeControl">
             <span>글자 크기</span>
             <input
@@ -2100,8 +2487,8 @@ export default function LivingDrawingTool() {
               <output>{formatDuration(recordingElapsed)}</output>
             </button>
           ) : (
-            <button type="button" className="recordingButton" onClick={startRecording}>
-              MP4 녹화 시작
+            <button type="button" className="recordingButton" onClick={() => void startRecording()}>
+              녹화 시작
             </button>
           )}
           {recordingClips.length > 0 && (
@@ -2161,6 +2548,51 @@ export default function LivingDrawingTool() {
           </section>
         </section>
       </div>
+      {isHelpOpen && (
+        <section className="helpOverlay" aria-label="사용 방법 안내" role="dialog" aria-modal="true">
+          <div className="helpPanel">
+            <header className="helpHeader">
+              <div>
+                <p>GRAVITY TOOL</p>
+                <h1>입자 드로잉 사용 방법</h1>
+              </div>
+              <button type="button" onClick={() => setIsHelpOpen(false)} aria-label="사용 방법 닫기">
+                닫기
+              </button>
+            </header>
+            <div className="helpGrid">
+              <article>
+                <h2>01. 텍스트</h2>
+                <p>텍스트 입력 후 추가하면 글자가 입자 레이어로 생성됩니다. 선택 도구로 글자를 클릭하면 내용, 크기, 커닝, 밀도, 색상, 선 굵기를 수정할 수 있습니다.</p>
+              </article>
+              <article>
+                <h2>02. 선택 / 이동</h2>
+                <p>선택 도구에서 개체를 클릭하면 바운딩 박스가 나타납니다. 드래그로 이동하고, 모서리 핸들로 크기 조절과 회전을 할 수 있습니다. 빈 영역을 드래그하면 여러 개를 같이 선택합니다.</p>
+              </article>
+              <article>
+                <h2>03. 그리기</h2>
+                <p>그리기 도구를 선택한 뒤 캔버스 안에서 드래그하면 선이 입자로 변환됩니다. 만들어진 선도 텍스트처럼 선택, 이동, 삭제, 색상 변경이 가능합니다.</p>
+              </article>
+              <article>
+                <h2>04. 끌어당김</h2>
+                <p>끌어당김 도구에서 캔버스를 누르고 있으면 주변 입자들이 클릭 지점으로 모입니다. 입자들은 서로 충돌하며 흔들리고, 마우스를 놓으면 원래 위치로 돌아갑니다.</p>
+              </article>
+              <article>
+                <h2>05. 사진 불러오기</h2>
+                <p>사진을 불러오면 이미지가 입자로 해석되어 캔버스에 배치됩니다. 이미지 입자도 선택, 이동, 끌어당김 효과의 영향을 받습니다.</p>
+              </article>
+              <article>
+                <h2>06. 캔버스 / 저장</h2>
+                <p>캔버스 비율은 1:1, 4:3, 3:4, 16:9, 9:16 중 선택합니다. PNG, SVG, 녹화 파일은 패널을 제외하고 흰 캔버스 영역만 내보냅니다.</p>
+              </article>
+            </div>
+            <footer className="helpFooter">
+              <span>Backspace / Delete: 선택 삭제</span>
+              <span>전체삭제: 모든 레이어 초기화</span>
+            </footer>
+          </div>
+        </section>
+      )}
       <div ref={hostRef} className="canvasHost" />
     </main>
   );

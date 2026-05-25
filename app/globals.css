@@ -20,6 +20,7 @@ body {
 
 button,
 input,
+select,
 output {
   font: inherit;
 }
@@ -118,6 +119,10 @@ output {
 }
 
 .importButton {
+  margin-bottom: 12px;
+}
+
+.helpButton {
   margin-bottom: 12px;
 }
 
@@ -267,6 +272,28 @@ button:disabled {
   white-space: nowrap;
 }
 
+.selectControl {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  margin: 0 0 16px;
+  color: #333333;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.selectControl select {
+  width: 82px;
+  height: 24px;
+  border: 1px dotted #333333;
+  border-radius: 0;
+  background: transparent;
+  color: #333333;
+  outline: 0;
+}
+
 .colorControl input {
   width: 28px;
   height: 20px;
@@ -390,6 +417,104 @@ button:disabled {
   text-decoration: none;
 }
 
+.helpOverlay {
+  position: fixed;
+  z-index: 5;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgba(235, 235, 230, 0.78);
+}
+
+.helpPanel {
+  width: min(760px, calc(100vw - 56px));
+  max-height: min(720px, calc(100vh - 56px));
+  overflow: auto;
+  border: 1px dotted #333333;
+  background: #f8f8f4;
+  color: #333333;
+  font-family: "Courier New", Courier, monospace;
+  box-shadow: 0 0 0 1px rgba(51, 51, 51, 0.04);
+}
+
+.helpHeader {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: start;
+  gap: 18px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px dotted #333333;
+}
+
+.helpHeader p {
+  margin: 0 0 8px;
+  font-size: 11px;
+  letter-spacing: 0;
+}
+
+.helpHeader h1 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.helpHeader button {
+  min-width: 54px;
+  border: 1px dotted #333333;
+  background: transparent;
+}
+
+.helpGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-bottom: 1px dotted #333333;
+}
+
+.helpGrid article {
+  min-height: 142px;
+  padding: 18px 20px;
+  border-right: 1px dotted #333333;
+  border-bottom: 1px dotted #333333;
+}
+
+.helpGrid article:nth-child(2n) {
+  border-right: 0;
+}
+
+.helpGrid article:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.helpGrid h2 {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.helpGrid p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.65;
+  word-break: keep-all;
+}
+
+.helpFooter {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+  font-size: 11px;
+}
+
+.helpFooter span {
+  padding: 12px 20px;
+}
+
+.helpFooter span + span {
+  border-left: 1px dotted #333333;
+}
+
 @media (max-width: 860px) {
   .toolShell {
     min-height: 100vh;
@@ -441,6 +566,30 @@ button:disabled {
   .hint {
     flex-basis: 100%;
     min-width: 100%;
+  }
+
+  .helpGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .helpGrid article,
+  .helpGrid article:nth-child(2n),
+  .helpGrid article:nth-last-child(-n + 2) {
+    border-right: 0;
+    border-bottom: 1px dotted #333333;
+  }
+
+  .helpGrid article:last-child {
+    border-bottom: 0;
+  }
+
+  .helpFooter {
+    grid-template-columns: 1fr;
+  }
+
+  .helpFooter span + span {
+    border-left: 0;
+    border-top: 1px dotted #333333;
   }
 }
 
