@@ -47,6 +47,27 @@ output {
   filter: contrast(1.04) saturate(1.06);
 }
 
+.canvasTextEditor {
+  position: fixed;
+  z-index: 3;
+  min-width: 96px;
+  border: 1.5px solid #1a56a8;
+  border-radius: 0;
+  padding: 0 8px;
+  background: rgba(248, 248, 244, 0.88);
+  color: #111111;
+  caret-color: #1a56a8;
+  outline: 0;
+  box-shadow: inset 0 0 0 1px rgba(26, 86, 168, 0.35);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.canvasTextEditor::selection {
+  background: #1a56a8;
+  color: #f8f8f4;
+}
+
 .panelStack {
   position: fixed;
   z-index: 2;

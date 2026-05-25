@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from "react";
 
 type SketchP5 = typeof import("p5")["default"];
 type P5Instance = InstanceType<SketchP5>;
@@ -81,6 +81,13 @@ type Rect = {
   height: number;
 };
 
+type TextEditOverlay = Rect & {
+  groupId: number;
+  fontId: TextFontId;
+  fontSize: number;
+  value: string;
+};
+
 const CONFIG = {
   particleSpacing: 8,
   textSampleStep: 9,
@@ -105,7 +112,7 @@ const CONFIG = {
   interGroupCollisionMaxChecks: 5200,
 };
 
-const INITIAL_TEXT = "Hello";
+const INITIAL_TEXT = "HELLO";
 const INITIAL_KOREAN_TEXT = "안녕하세요";
 const INITIAL_PRESET = {
   size: 140,
@@ -242,6 +249,8 @@ function loadH264Encoder() {
 export default function LivingDrawingTool() {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const textInputRef = useRef<HTMLInputElement | null>(null);
+  const textEditInputRef = useRef<HTMLInputElement | null>(null);
   const p5Ref = useRef<P5Instance | null>(null);
   const toolModeRef = useRef<ToolMode>("select");
   const textSizeRef = useRef(INITIAL_PRESET.size);
@@ -256,6 +265,7 @@ export default function LivingDrawingTool() {
   const randomSeedRef = useRef(0);
   const selectedGroupIdRef = useRef<number | null>(null);
   const selectedGroupIdsRef = useRef<number[]>([]);
+  const editingGroupIdRef = useRef<number | null>(null);
   const recordingStartedAtRef = useRef(0);
   const recordingTimerRef = useRef<number | null>(null);
   const recordingClipsRef = useRef<RecordingClip[]>([]);
@@ -297,6 +307,7 @@ export default function LivingDrawingTool() {
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
   const [selectedGroupType, setSelectedGroupType] = useState<ParticleType | null>(null);
   const [selectedGroupCount, setSelectedGroupCount] = useState(0);
+  const [textEditOverlay, setTextEditOverlay] = useState<TextEditOverlay | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingElapsed, setRecordingElapsed] = useState(0);
   const [recordingClips, setRecordingClips] = useState<RecordingClip[]>([]);
@@ -585,6 +596,40 @@ export default function LivingDrawingTool() {
               selectionBoxEnd = { x: p.mouseX, y: p.mouseY };
             }
           }
+        };
+
+        p.doubleClicked = (event?: MouseEvent) => {
+          if (!isCanvasPointerEvent(event) || !isInsideCanvas() || toolModeRef.current !== "select") return;
+          const selectedId = findGroupAt(p.mouseX, p.mouseY);
+          if (selectedId === null) return;
+          const group = groups.find((item) => item.id === selectedId);
+          if (!group || group.type !== "text") return;
+
+          selectGroup(selectedId);
+          editingGroupIdRef.current = selectedId;
+          const bounds = getGroupBounds(selectedId);
+          if (bounds) {
+            const box = getSelectionBox(bounds);
+            setTextEditOverlay({
+              groupId: selectedId,
+              x: box.x,
+              y: box.y,
+              width: Math.max(120, box.width),
+              height: Math.max(36, box.height),
+              fontId: group.fontId ?? INITIAL_PRESET.frontFontId,
+              fontSize: Math.max(16, Math.min(group.size ?? INITIAL_PRESET.size, box.height * 0.9)),
+              value: group.text ?? "",
+            });
+          }
+          isPointerDown = false;
+          isMovingSelection = false;
+          hasSelectionMoveSnapshot = false;
+          isBoxSelecting = false;
+          window.setTimeout(() => {
+            textEditInputRef.current?.focus();
+            textEditInputRef.current?.select();
+          }, 0);
+          return false;
         };
 
         p.mouseDragged = () => {
@@ -1332,6 +1377,37 @@ export default function LivingDrawingTool() {
           p.line(handles.rotateAnchor.x, handles.rotateAnchor.y, handles.rotate.x, handles.rotate.y);
           p.noStroke();
           p.circle(handles.rotate.x, handles.rotate.y, handleSize + 2);
+
+          if (
+            selectedGroupIdRef.current &&
+            selectedGroupIdRef.current === editingGroupIdRef.current &&
+            selectedGroupIdsRef.current.length === 1
+          ) {
+            drawTextEditCue(box);
+          }
+        }
+
+        function drawTextEditCue(box: { x: number; y: number; width: number; height: number }) {
+          const cursorVisible = Math.floor(p.millis() / 420) % 2 === 0;
+          const cursorX = box.x + box.width + 10;
+          const cursorTop = box.y + 6;
+          const cursorBottom = box.y + box.height - 6;
+
+          p.blendMode(p.BLEND);
+          p.noStroke();
+          p.fill(26, 86, 168, 230);
+          p.rect(box.x, box.y - 22, 42, 16);
+          p.fill(248, 248, 244);
+          p.textAlign(p.CENTER, p.CENTER);
+          p.textSize(10);
+          p.text("EDIT", box.x + 21, box.y - 14);
+
+          if (cursorVisible) {
+            p.stroke(26, 86, 168, 245);
+            p.strokeWeight(2);
+            p.line(cursorX, cursorTop, cursorX, cursorBottom);
+          }
+          p.noFill();
         }
 
         function drawMarqueeBox() {
@@ -1696,6 +1772,10 @@ export default function LivingDrawingTool() {
             textFontRef.current = group.fontId ?? INITIAL_PRESET.frontFontId;
             setTextFontState(group.fontId ?? INITIAL_PRESET.frontFontId);
           }
+          if (!uniqueIds.includes(editingGroupIdRef.current ?? -1)) {
+            editingGroupIdRef.current = null;
+            setTextEditOverlay(null);
+          }
           setParticleSize(group.particleSize);
           setParticleColor(group.color);
           lineWidthRef.current = group.lineWidth;
@@ -1896,6 +1976,8 @@ export default function LivingDrawingTool() {
         function clearSelectedGroup() {
           selectedGroupIdsRef.current = [];
           selectedGroupIdRef.current = null;
+          editingGroupIdRef.current = null;
+          setTextEditOverlay(null);
           setSelectedGroupId(null);
           setSelectedGroupType(null);
           setSelectedGroupCount(0);
@@ -2398,12 +2480,28 @@ export default function LivingDrawingTool() {
 
   function handleTextChange(nextText: string) {
     setText(nextText);
+    setTextEditOverlay((overlay) => (overlay ? { ...overlay, value: nextText } : overlay));
     if (
-      selectedGroupId &&
-      selectedGroupType === "text" &&
+      selectedGroupIdRef.current &&
       typeof apiRef.current?.updateSelectedTextContent === "function"
     ) {
       apiRef.current?.updateSelectedTextContent(nextText);
+    }
+  }
+
+  function stopTextEditing() {
+    editingGroupIdRef.current = null;
+    setTextEditOverlay(null);
+  }
+
+  function handleTextEditOverlayChange(nextText: string) {
+    handleTextChange(nextText);
+  }
+
+  function handleTextEditOverlayKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Escape" || event.key === "Enter") {
+      event.preventDefault();
+      textEditInputRef.current?.blur();
     }
   }
 
@@ -2420,9 +2518,11 @@ export default function LivingDrawingTool() {
         <section className="controlBar" aria-label="드로잉 설정">
           <form className="textForm" onSubmit={submitText}>
             <input
+              ref={textInputRef}
               aria-label="입자로 변환할 텍스트"
               value={text}
               onChange={(event) => handleTextChange(event.target.value)}
+              onBlur={stopTextEditing}
               placeholder="텍스트 입력"
             />
             <button type="submit">{selectedGroupType === "text" ? "텍스트 수정" : "텍스트 추가"}</button>
@@ -2440,9 +2540,6 @@ export default function LivingDrawingTool() {
           />
           <button type="button" className="importButton" onClick={() => imageInputRef.current?.click()}>
             사진 불러오기
-          </button>
-          <button type="button" className="helpButton" onClick={() => setIsHelpOpen(true)}>
-            사용 방법
           </button>
           <label className="selectControl">
             <span>캔버스</span>
@@ -2648,17 +2745,36 @@ export default function LivingDrawingTool() {
           </section>
         </section>
       </div>
+      {textEditOverlay && (
+        <input
+          ref={textEditInputRef}
+          className="canvasTextEditor"
+          aria-label="캔버스 텍스트 편집"
+          value={textEditOverlay.value}
+          style={{
+            left: textEditOverlay.x,
+            top: textEditOverlay.y,
+            width: textEditOverlay.width,
+            height: textEditOverlay.height,
+            fontFamily: getTextFontStack(textEditOverlay.fontId),
+            fontSize: textEditOverlay.fontSize,
+          }}
+          onChange={(event) => handleTextEditOverlayChange(event.target.value)}
+          onKeyDown={handleTextEditOverlayKeyDown}
+          onBlur={stopTextEditing}
+        />
+      )}
       {isHelpOpen && (
-        <section className="helpOverlay" aria-label="사용 방법 안내" role="dialog" aria-modal="true">
+        <section className="helpOverlay" aria-label="설명서 안내" role="dialog" aria-modal="true">
           <div className="helpPanel">
             <header className="helpHeader">
               <div>
                 <p>
                   GRAVITY TOOL <span>ver. 2026.05.25</span>
                 </p>
-                <h1>입자 드로잉 사용 방법</h1>
+                <h1>입자 드로잉 설명서</h1>
               </div>
-              <button type="button" onClick={() => setIsHelpOpen(false)} aria-label="사용 방법 닫기">
+              <button type="button" onClick={() => setIsHelpOpen(false)} aria-label="설명서 닫기">
                 닫기
               </button>
             </header>
