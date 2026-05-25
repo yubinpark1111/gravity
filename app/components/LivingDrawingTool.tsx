@@ -230,12 +230,18 @@ type H264EncoderFactory = {
 
 let h264EncoderLoader: Promise<H264EncoderFactory> | null = null;
 
+function getPublicAssetUrl(path: string) {
+  const base = new URL(document.baseURI);
+  const directoryPath = base.pathname.endsWith("/") ? base.pathname : `${base.pathname}/`;
+  return new URL(path, `${base.origin}${directoryPath}`).toString();
+}
+
 function loadH264Encoder() {
   const currentWindow = window as typeof window & { HME?: H264EncoderFactory };
   if (currentWindow.HME) return Promise.resolve(currentWindow.HME);
   if (h264EncoderLoader) return h264EncoderLoader;
 
-  h264EncoderLoader = fetch("/vendor/h264-mp4-encoder.web.js").then(async (response) => {
+  h264EncoderLoader = fetch(getPublicAssetUrl("vendor/h264-mp4-encoder.web.js")).then(async (response) => {
     if (!response.ok) throw new Error("H264 encoder failed to load");
     const source = await response.text();
     const factory = new Function(`${source}; return HME;`)() as H264EncoderFactory;
