@@ -112,16 +112,16 @@ const CONFIG = {
   interGroupCollisionMaxChecks: 5200,
 };
 
-const INITIAL_TEXT = "HELLO";
+const INITIAL_TEXT = "Hello";
 const INITIAL_KOREAN_TEXT = "안녕하세요";
 const INITIAL_PRESET = {
-  size: 140,
+  size: 150,
   backLetterSpacing: -3,
   frontLetterSpacing: -4,
   backFontId: "sans" as TextFontId,
-  frontFontId: "brush" as TextFontId,
-  particleSize: 6,
-  density: 7700,
+  frontFontId: "script" as TextFontId,
+  particleSize: 4,
+  density: 12000,
   frontLineWidth: 1.2,
   backLineWidth: 0.25,
   frontColor: "#000000",
