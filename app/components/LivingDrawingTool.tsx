@@ -373,7 +373,9 @@ export default function LivingDrawingTool() {
         let h264Encoder: any = null;
         let mp4OnComplete: ((blob: Blob, extension: string) => void) | null = null;
         let recordingFrameIndex = 0;
-        const recordingFps = 30;
+        const recordingFps = 60;
+        const recordingBitrate = 16_000_000;
+        const recordingBaseResolution = 1080;
         let undoStack: HistorySnapshot[] = [];
 
         p.setup = () => {
@@ -501,7 +503,8 @@ export default function LivingDrawingTool() {
             },
             startRecording: async (onComplete: (blob: Blob, extension: string) => void) => {
               if (!canvasElement || mediaRecorder || h264Encoder || webCodecsRecording) return false;
-              const exportCanvas = exportCanvasImage();
+              const recordingSize = getRecordingCanvasSize();
+              const exportCanvas = exportCanvasImage(recordingSize.width, recordingSize.height);
               if (!exportCanvas) return false;
               exportCanvasElement = exportCanvas;
               exportCanvasContext = exportCanvasElement.getContext("2d");
@@ -805,7 +808,7 @@ export default function LivingDrawingTool() {
             mediaRecorderOnComplete = onComplete;
             mediaRecorder = new MediaRecorder(stream, {
               mimeType,
-              videoBitsPerSecond: 8_000_000,
+              videoBitsPerSecond: recordingBitrate,
             });
             mediaRecorder.ondataavailable = (event) => {
               if (event.data.size > 0) mediaRecorderChunks.push(event.data);
@@ -861,7 +864,7 @@ export default function LivingDrawingTool() {
             codec: "avc1.42E01E",
             width,
             height,
-            bitrate: 8_000_000,
+            bitrate: recordingBitrate,
             framerate: recordingFps,
             avc: { format: "avc" },
             hardwareAcceleration: "prefer-hardware",
@@ -1445,25 +1448,38 @@ export default function LivingDrawingTool() {
           return x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
         }
 
-        function exportCanvasImage() {
+        function getRecordingCanvasSize() {
+          const rect = getArtboardRect();
+          const isLandscape = rect.width >= rect.height;
+          const width = isLandscape ? recordingBaseResolution * (rect.width / rect.height) : recordingBaseResolution;
+          const height = isLandscape ? recordingBaseResolution : recordingBaseResolution * (rect.height / rect.width);
+          return {
+            width: Math.max(2, Math.round(width / 2) * 2),
+            height: Math.max(2, Math.round(height / 2) * 2),
+          };
+        }
+
+        function exportCanvasImage(targetWidth?: number, targetHeight?: number) {
           const rect = getArtboardRect();
           const exportCanvas = document.createElement("canvas");
-          exportCanvas.width = Math.max(1, Math.round(rect.width));
-          exportCanvas.height = Math.max(1, Math.round(rect.height));
+          exportCanvas.width = Math.max(1, Math.round(targetWidth ?? rect.width));
+          exportCanvas.height = Math.max(1, Math.round(targetHeight ?? rect.height));
           const context = exportCanvas.getContext("2d");
           if (!context) return null;
-          copyArtboardToCanvas(exportCanvas, context);
+          copyArtboardToCanvas(exportCanvas, context, exportCanvas.width, exportCanvas.height);
           return exportCanvas;
         }
 
         function copyArtboardToCanvas(
           targetCanvas: HTMLCanvasElement | null,
           context: CanvasRenderingContext2D | null,
+          targetWidth?: number,
+          targetHeight?: number,
         ) {
           if (!canvasElement || !targetCanvas || !context) return;
           const rect = getArtboardRect();
-          const width = Math.max(1, Math.round(rect.width));
-          const height = Math.max(1, Math.round(rect.height));
+          const width = Math.max(1, Math.round(targetWidth ?? targetCanvas.width ?? rect.width));
+          const height = Math.max(1, Math.round(targetHeight ?? targetCanvas.height ?? rect.height));
           if (targetCanvas.width !== width) targetCanvas.width = width;
           if (targetCanvas.height !== height) targetCanvas.height = height;
           drawArtboardContentToContext(context, rect, width, height);
