@@ -365,6 +365,10 @@ export default function LivingDrawingTool() {
         let exportCanvasElement: HTMLCanvasElement | null = null;
         let exportCanvasContext: CanvasRenderingContext2D | null = null;
         let recordingFrameTimer: number | null = null;
+        let mediaRecorder: MediaRecorder | null = null;
+        let mediaRecorderChunks: Blob[] = [];
+        let mediaRecorderOnComplete: ((blob: Blob, extension: string) => void) | null = null;
+        let mediaRecorderMimeType = "";
         let webCodecsRecording: WebCodecsRecording | null = null;
         let h264Encoder: any = null;
         let mp4OnComplete: ((blob: Blob, extension: string) => void) | null = null;
@@ -496,13 +500,14 @@ export default function LivingDrawingTool() {
               return buildSvgExport();
             },
             startRecording: async (onComplete: (blob: Blob, extension: string) => void) => {
-              if (!canvasElement || h264Encoder || webCodecsRecording) return false;
+              if (!canvasElement || mediaRecorder || h264Encoder || webCodecsRecording) return false;
               const exportCanvas = exportCanvasImage();
               if (!exportCanvas) return false;
               exportCanvasElement = exportCanvas;
               exportCanvasContext = exportCanvasElement.getContext("2d");
               if (!exportCanvasContext) return false;
 
+              if (startMediaRecorderRecording(onComplete)) return true;
               if (await startWebCodecsRecording(onComplete)) return true;
               exportCanvasElement = null;
               exportCanvasContext = null;
@@ -775,6 +780,65 @@ export default function LivingDrawingTool() {
           recordingFrameIndex += 1;
         }
 
+        function getSupportedMediaRecorderMp4Type() {
+          if (typeof MediaRecorder === "undefined") return null;
+          const candidates = [
+            'video/mp4;codecs="avc1.42E01E"',
+            'video/mp4;codecs="avc1.4D401E"',
+            'video/mp4;codecs="h264"',
+            "video/mp4",
+          ];
+          return candidates.find((type) => MediaRecorder.isTypeSupported(type)) ?? null;
+        }
+
+        function startMediaRecorderRecording(onComplete: (blob: Blob, extension: string) => void) {
+          if (!exportCanvasElement || !exportCanvasContext || typeof exportCanvasElement.captureStream !== "function") {
+            return false;
+          }
+          const mimeType = getSupportedMediaRecorderMp4Type();
+          if (!mimeType) return false;
+
+          try {
+            const stream = exportCanvasElement.captureStream(recordingFps);
+            mediaRecorderChunks = [];
+            mediaRecorderMimeType = mimeType;
+            mediaRecorderOnComplete = onComplete;
+            mediaRecorder = new MediaRecorder(stream, {
+              mimeType,
+              videoBitsPerSecond: 8_000_000,
+            });
+            mediaRecorder.ondataavailable = (event) => {
+              if (event.data.size > 0) mediaRecorderChunks.push(event.data);
+            };
+            mediaRecorder.onstop = () => {
+              const blob = new Blob(mediaRecorderChunks, { type: mediaRecorderMimeType || "video/mp4" });
+              mediaRecorderOnComplete?.(blob, "mp4");
+              stream.getTracks().forEach((track) => track.stop());
+              mediaRecorder = null;
+              mediaRecorderChunks = [];
+              mediaRecorderOnComplete = null;
+              mediaRecorderMimeType = "";
+              exportCanvasElement = null;
+              exportCanvasContext = null;
+            };
+            recordingFrameIndex = 0;
+            recordingFrameTimer = window.setInterval(() => {
+              copyArtboardToCanvas(exportCanvasElement, exportCanvasContext);
+              recordingFrameIndex += 1;
+            }, 1000 / recordingFps);
+            copyArtboardToCanvas(exportCanvasElement, exportCanvasContext);
+            mediaRecorder.start(250);
+            return true;
+          } catch (error) {
+            console.error(error);
+            mediaRecorder = null;
+            mediaRecorderChunks = [];
+            mediaRecorderOnComplete = null;
+            mediaRecorderMimeType = "";
+            return false;
+          }
+        }
+
         async function startWebCodecsRecording(onComplete: (blob: Blob, extension: string) => void) {
           const webCodecsWindow = window as typeof window & {
             VideoEncoder?: any;
@@ -857,11 +921,25 @@ export default function LivingDrawingTool() {
         }
 
         async function finishRecording() {
+          if (mediaRecorder) {
+            finishMediaRecorderRecording();
+            return;
+          }
           if (webCodecsRecording) {
             await finishWebCodecsRecording();
             return;
           }
           await finishMp4Recording();
+        }
+
+        function finishMediaRecorderRecording() {
+          if (!mediaRecorder) return;
+          if (recordingFrameTimer !== null) {
+            window.clearInterval(recordingFrameTimer);
+            recordingFrameTimer = null;
+          }
+          copyArtboardToCanvas(exportCanvasElement, exportCanvasContext);
+          mediaRecorder.stop();
         }
 
         async function finishWebCodecsRecording() {
