@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from "react";
+import { ArrayBufferTarget, Muxer } from "mp4-muxer";
 
 type SketchP5 = typeof import("p5")["default"];
 type P5Instance = InstanceType<SketchP5>;
@@ -231,6 +232,13 @@ type H264EncoderFactory = {
   createH264MP4Encoder: () => Promise<any>;
 };
 
+type WebCodecsRecording = {
+  encoder: any;
+  muxer: Muxer<ArrayBufferTarget>;
+  target: ArrayBufferTarget;
+  onComplete: (blob: Blob, extension: string) => void;
+};
+
 let h264EncoderLoader: Promise<H264EncoderFactory> | null = null;
 
 function getPublicAssetUrl(path: string) {
@@ -357,6 +365,7 @@ export default function LivingDrawingTool() {
         let exportCanvasElement: HTMLCanvasElement | null = null;
         let exportCanvasContext: CanvasRenderingContext2D | null = null;
         let recordingFrameTimer: number | null = null;
+        let webCodecsRecording: WebCodecsRecording | null = null;
         let h264Encoder: any = null;
         let mp4OnComplete: ((blob: Blob, extension: string) => void) | null = null;
         let recordingFrameIndex = 0;
@@ -487,54 +496,20 @@ export default function LivingDrawingTool() {
               return buildSvgExport();
             },
             startRecording: async (onComplete: (blob: Blob, extension: string) => void) => {
-              if (!canvasElement || h264Encoder) return false;
+              if (!canvasElement || h264Encoder || webCodecsRecording) return false;
               const exportCanvas = exportCanvasImage();
               if (!exportCanvas) return false;
               exportCanvasElement = exportCanvas;
               exportCanvasContext = exportCanvasElement.getContext("2d");
               if (!exportCanvasContext) return false;
 
-              try {
-                const HME = await loadH264Encoder();
-                const encoder = await HME.createH264MP4Encoder();
-                encoder.width = Math.max(2, Math.floor(exportCanvasElement.width / 2) * 2);
-                encoder.height = Math.max(2, Math.floor(exportCanvasElement.height / 2) * 2);
-                encoder.frameRate = recordingFps;
-                encoder.kbps = 8000;
-                encoder.speed = 7;
-                encoder.groupOfPictures = recordingFps * 2;
-                encoder.initialize();
-                if (encoder.width !== exportCanvasElement.width || encoder.height !== exportCanvasElement.height) {
-                  exportCanvasElement.width = encoder.width;
-                  exportCanvasElement.height = encoder.height;
-                  exportCanvasContext = exportCanvasElement.getContext("2d");
-                  if (!exportCanvasContext) {
-                    encoder.delete();
-                    return false;
-                  }
-                }
-                h264Encoder = encoder;
-                mp4OnComplete = onComplete;
-              } catch (error) {
-                console.error(error);
-                h264Encoder = null;
-                mp4OnComplete = null;
-                exportCanvasElement = null;
-                exportCanvasContext = null;
-                return false;
-              }
-
-              recordingFrameIndex = 0;
-              recordingFrameTimer = window.setInterval(() => {
-                copyArtboardToCanvas(exportCanvasElement, exportCanvasContext);
-                encodeMp4Frame();
-              }, 1000 / 30);
-              copyArtboardToCanvas(exportCanvasElement, exportCanvasContext);
-              encodeMp4Frame();
-              return true;
+              if (await startWebCodecsRecording(onComplete)) return true;
+              exportCanvasElement = null;
+              exportCanvasContext = null;
+              return false;
             },
             stopRecording: () => {
-              void finishMp4Recording();
+              void finishRecording();
             },
             deleteSelectedGroup: () => {
               return deleteSelectedGroup();
@@ -798,6 +773,119 @@ export default function LivingDrawingTool() {
           const frame = exportCanvasContext.getImageData(0, 0, exportCanvasElement.width, exportCanvasElement.height);
           h264Encoder.addFrameRgba(frame.data);
           recordingFrameIndex += 1;
+        }
+
+        async function startWebCodecsRecording(onComplete: (blob: Blob, extension: string) => void) {
+          const webCodecsWindow = window as typeof window & {
+            VideoEncoder?: any;
+            VideoFrame?: any;
+          };
+          if (!webCodecsWindow.VideoEncoder || !webCodecsWindow.VideoFrame || !exportCanvasElement || !exportCanvasContext) {
+            return false;
+          }
+
+          const width = Math.max(2, Math.floor(exportCanvasElement.width / 2) * 2);
+          const height = Math.max(2, Math.floor(exportCanvasElement.height / 2) * 2);
+          if (width !== exportCanvasElement.width || height !== exportCanvasElement.height) {
+            exportCanvasElement.width = width;
+            exportCanvasElement.height = height;
+            exportCanvasContext = exportCanvasElement.getContext("2d");
+            if (!exportCanvasContext) return false;
+          }
+
+          const config = {
+            codec: "avc1.42E01E",
+            width,
+            height,
+            bitrate: 8_000_000,
+            framerate: recordingFps,
+            avc: { format: "avc" },
+            hardwareAcceleration: "prefer-hardware",
+          };
+
+          try {
+            if (typeof webCodecsWindow.VideoEncoder.isConfigSupported === "function") {
+              const support = await webCodecsWindow.VideoEncoder.isConfigSupported(config);
+              if (!support.supported) return false;
+            }
+
+            const target = new ArrayBufferTarget();
+            const muxer = new Muxer({
+              target,
+              video: {
+                codec: "avc",
+                width,
+                height,
+                frameRate: recordingFps,
+              },
+              fastStart: "in-memory",
+            });
+            const encoder = new webCodecsWindow.VideoEncoder({
+              output: (chunk: any, meta: any) => muxer.addVideoChunk(chunk, meta),
+              error: (error: unknown) => console.error(error),
+            });
+            encoder.configure(config);
+            webCodecsRecording = { encoder, muxer, target, onComplete };
+          } catch (error) {
+            console.error(error);
+            webCodecsRecording = null;
+            return false;
+          }
+
+          recordingFrameIndex = 0;
+          recordingFrameTimer = window.setInterval(() => {
+            copyArtboardToCanvas(exportCanvasElement, exportCanvasContext);
+            encodeWebCodecsFrame();
+          }, 1000 / recordingFps);
+          copyArtboardToCanvas(exportCanvasElement, exportCanvasContext);
+          encodeWebCodecsFrame();
+          return true;
+        }
+
+        function encodeWebCodecsFrame() {
+          if (!webCodecsRecording || !exportCanvasElement || !exportCanvasContext) return;
+          const videoFrameConstructor = (window as typeof window & { VideoFrame?: any }).VideoFrame;
+          if (!videoFrameConstructor) return;
+          const timestamp = Math.round((recordingFrameIndex * 1_000_000) / recordingFps);
+          const duration = Math.round(1_000_000 / recordingFps);
+          const frame = new videoFrameConstructor(exportCanvasElement, { timestamp, duration });
+          webCodecsRecording.encoder.encode(frame, {
+            keyFrame: recordingFrameIndex % (recordingFps * 2) === 0,
+          });
+          frame.close();
+          recordingFrameIndex += 1;
+        }
+
+        async function finishRecording() {
+          if (webCodecsRecording) {
+            await finishWebCodecsRecording();
+            return;
+          }
+          await finishMp4Recording();
+        }
+
+        async function finishWebCodecsRecording() {
+          const recording = webCodecsRecording;
+          if (!recording) return;
+          if (recordingFrameTimer !== null) {
+            window.clearInterval(recordingFrameTimer);
+            recordingFrameTimer = null;
+          }
+
+          try {
+            copyArtboardToCanvas(exportCanvasElement, exportCanvasContext);
+            encodeWebCodecsFrame();
+            await recording.encoder.flush();
+            recording.encoder.close();
+            recording.muxer.finalize();
+            if (recording.target.buffer.byteLength > 0) {
+              recording.onComplete(new Blob([recording.target.buffer], { type: "video/mp4" }), "mp4");
+            }
+          } finally {
+            webCodecsRecording = null;
+            exportCanvasElement = null;
+            exportCanvasContext = null;
+          }
         }
 
         async function finishMp4Recording() {
@@ -2363,7 +2451,7 @@ export default function LivingDrawingTool() {
       setIsRecording(true);
       return;
     }
-    window.alert("이 브라우저에서 QuickTime 호환 MP4 인코딩을 지원하지 않습니다.");
+    window.alert("이 브라우저는 macOS에서 열리는 MP4 녹화를 지원하지 않습니다. 최신 Chrome 또는 Safari에서 다시 시도해주세요.");
   }
 
   function stopRecording() {
