@@ -239,6 +239,13 @@ type WebCodecsRecording = {
   onComplete: (blob: Blob, extension: string) => void;
 };
 
+type GpuParticleRenderer = {
+  canvas: HTMLCanvasElement;
+  ready: boolean;
+  render: (items: Float32Array, count: number, width: number, height: number) => void;
+  resize: (width: number, height: number) => void;
+};
+
 let h264EncoderLoader: Promise<H264EncoderFactory> | null = null;
 
 function getPublicAssetUrl(path: string) {
@@ -261,6 +268,218 @@ function loadH264Encoder() {
   });
 
   return h264EncoderLoader;
+}
+
+async function createGpuParticleRenderer(width: number, height: number): Promise<GpuParticleRenderer | null> {
+  const gpu = (navigator as typeof navigator & { gpu?: any }).gpu;
+  if (!gpu) return null;
+
+  const adapter = await gpu.requestAdapter();
+  if (!adapter) return null;
+
+  const device = await adapter.requestDevice();
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("webgpu") as any;
+  if (!context) return null;
+
+  const format = gpu.getPreferredCanvasFormat();
+  const vertexData = new Float32Array([
+    -1, -1,
+    1, -1,
+    -1, 1,
+    -1, 1,
+    1, -1,
+    1, 1,
+  ]);
+  const vertexBuffer = device.createBuffer({
+    size: vertexData.byteLength,
+    usage: 0x20 | 0x8,
+    mappedAtCreation: true,
+  });
+  new Float32Array(vertexBuffer.getMappedRange()).set(vertexData);
+  vertexBuffer.unmap();
+
+  let particleBufferSize = 4;
+  let particleBuffer = device.createBuffer({
+    size: particleBufferSize,
+    usage: 0x20 | 0x8,
+  });
+  const uniformBuffer = device.createBuffer({
+    size: 8,
+    usage: 0x40 | 0x8,
+  });
+
+  const shader = device.createShaderModule({
+    code: `
+struct Uniforms {
+  viewport: vec2<f32>,
+};
+
+struct VertexOut {
+  @builtin(position) position: vec4<f32>,
+  @location(0) local: vec2<f32>,
+  @location(1) fillColor: vec4<f32>,
+  @location(2) strokeColor: vec4<f32>,
+  @location(3) radius: f32,
+  @location(4) strokeWidth: f32,
+};
+
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+@vertex
+fn vertexMain(
+  @location(0) unit: vec2<f32>,
+  @location(1) center: vec2<f32>,
+  @location(2) radius: f32,
+  @location(3) strokeWidth: f32,
+  @location(4) fillColor: vec4<f32>,
+  @location(5) strokeColor: vec4<f32>,
+) -> VertexOut {
+  let pixel = center + unit * radius;
+  let clip = vec2<f32>(
+    pixel.x / uniforms.viewport.x * 2.0 - 1.0,
+    1.0 - pixel.y / uniforms.viewport.y * 2.0
+  );
+  var out: VertexOut;
+  out.position = vec4<f32>(clip, 0.0, 1.0);
+  out.local = unit;
+  out.fillColor = fillColor;
+  out.strokeColor = strokeColor;
+  out.radius = radius;
+  out.strokeWidth = strokeWidth;
+  return out;
+}
+
+@fragment
+fn fragmentMain(in: VertexOut) -> @location(0) vec4<f32> {
+  let dist = length(in.local);
+  if (dist > 1.0) {
+    discard;
+  }
+  let aa = max(0.015, 1.0 / max(in.radius, 1.0));
+  let edgeAlpha = 1.0 - smoothstep(1.0 - aa, 1.0, dist);
+  let strokeAmount = smoothstep(
+    max(0.0, 1.0 - in.strokeWidth / max(in.radius, 1.0) - aa),
+    max(0.0, 1.0 - in.strokeWidth / max(in.radius, 1.0) + aa),
+    dist
+  );
+  let color = mix(in.fillColor, in.strokeColor, strokeAmount);
+  return vec4<f32>(color.rgb, color.a * edgeAlpha);
+}
+`,
+  });
+
+  const pipeline = device.createRenderPipeline({
+    layout: "auto",
+    vertex: {
+      module: shader,
+      entryPoint: "vertexMain",
+      buffers: [
+        {
+          arrayStride: 8,
+          stepMode: "vertex",
+          attributes: [{ shaderLocation: 0, offset: 0, format: "float32x2" }],
+        },
+        {
+          arrayStride: 48,
+          stepMode: "instance",
+          attributes: [
+            { shaderLocation: 1, offset: 0, format: "float32x2" },
+            { shaderLocation: 2, offset: 8, format: "float32" },
+            { shaderLocation: 3, offset: 12, format: "float32" },
+            { shaderLocation: 4, offset: 16, format: "float32x4" },
+            { shaderLocation: 5, offset: 32, format: "float32x4" },
+          ],
+        },
+      ],
+    },
+    fragment: {
+      module: shader,
+      entryPoint: "fragmentMain",
+      targets: [
+        {
+          format,
+          blend: {
+            color: {
+              srcFactor: "src-alpha",
+              dstFactor: "one-minus-src-alpha",
+              operation: "add",
+            },
+            alpha: {
+              srcFactor: "one",
+              dstFactor: "one-minus-src-alpha",
+              operation: "add",
+            },
+          },
+        },
+      ],
+    },
+    primitive: {
+      topology: "triangle-list",
+    },
+  });
+
+  const bindGroup = device.createBindGroup({
+    layout: pipeline.getBindGroupLayout(0),
+    entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
+  });
+
+  function resize(nextWidth: number, nextHeight: number) {
+    canvas.width = Math.max(1, Math.round(nextWidth));
+    canvas.height = Math.max(1, Math.round(nextHeight));
+    context.configure({
+      device,
+      format,
+      alphaMode: "premultiplied",
+    });
+  }
+
+  function ensureParticleBuffer(byteLength: number) {
+    const required = Math.max(4, byteLength);
+    if (required <= particleBufferSize) return;
+    particleBufferSize = Math.ceil(required * 1.5);
+    particleBuffer.destroy?.();
+    particleBuffer = device.createBuffer({
+      size: particleBufferSize,
+      usage: 0x20 | 0x8,
+    });
+  }
+
+  resize(width, height);
+
+  return {
+    canvas,
+    ready: true,
+    resize,
+    render(items: Float32Array, count: number, nextWidth: number, nextHeight: number) {
+      if (count <= 0) return;
+      if (canvas.width !== Math.round(nextWidth) || canvas.height !== Math.round(nextHeight)) {
+        resize(nextWidth, nextHeight);
+      }
+      ensureParticleBuffer(items.byteLength);
+      device.queue.writeBuffer(uniformBuffer, 0, new Float32Array([canvas.width, canvas.height]));
+      device.queue.writeBuffer(particleBuffer, 0, items);
+
+      const encoder = device.createCommandEncoder();
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [
+          {
+            view: context.getCurrentTexture().createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: "clear",
+            storeOp: "store",
+          },
+        ],
+      });
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bindGroup);
+      pass.setVertexBuffer(0, vertexBuffer);
+      pass.setVertexBuffer(1, particleBuffer);
+      pass.draw(6, count);
+      pass.end();
+      device.queue.submit([encoder.finish()]);
+    },
+  };
 }
 
 export default function LivingDrawingTool() {
@@ -362,6 +581,8 @@ export default function LivingDrawingTool() {
         let mode: ParticleState = "stable";
         let grainLayer: ReturnType<P5Instance["createImage"]>;
         let canvasElement: HTMLCanvasElement | null = null;
+        let gpuParticleRenderer: GpuParticleRenderer | null = null;
+        let gpuParticleItems = new Float32Array(0);
         let exportCanvasElement: HTMLCanvasElement | null = null;
         let exportCanvasContext: CanvasRenderingContext2D | null = null;
         let recordingFrameTimer: number | null = null;
@@ -386,6 +607,9 @@ export default function LivingDrawingTool() {
           p.colorMode(p.RGB, 255, 255, 255, 255);
           p.noFill();
           grainLayer = makeGrainLayer();
+          void createGpuParticleRenderer(p.width, p.height).then((renderer) => {
+            gpuParticleRenderer = renderer;
+          });
           addInitialTextPreset();
 
           apiRef.current = {
@@ -1395,6 +1619,8 @@ export default function LivingDrawingTool() {
         }
 
         function drawParticles() {
+          if (drawParticlesWithWebGpu()) return;
+
           p.blendMode(p.BLEND);
 
           for (let i = 0; i < particles.length; i += 1) {
@@ -1417,6 +1643,48 @@ export default function LivingDrawingTool() {
           }
 
           p.blendMode(p.BLEND);
+        }
+
+        function drawParticlesWithWebGpu() {
+          if (!gpuParticleRenderer?.ready || particles.length === 0) return false;
+          const floatsPerParticle = 12;
+          const requiredLength = particles.length * floatsPerParticle;
+          if (gpuParticleItems.length < requiredLength) {
+            gpuParticleItems = new Float32Array(requiredLength);
+          }
+
+          let offset = 0;
+          for (let i = 0; i < particles.length; i += 1) {
+            const particle = particles[i];
+            const fillColor = getParticleFillColor(particle);
+            const strokeColor = getParticleStrokeColor(particle);
+            const speed = Math.min(1, p.dist(0, 0, particle.vx, particle.vy) / 9);
+            const isSelected = Boolean(particle.groupId && selectedGroupIdsRef.current.includes(particle.groupId));
+            const alpha = (isSelected ? 255 : 225 + speed * 20) / 255;
+            const group = getGroupForParticle(particle);
+            const groupParticleSize = group?.particleSize ?? particleSizeRef.current;
+            const groupLineWidth = group?.lineWidth ?? lineWidthRef.current;
+            const radius = Math.max(0.5, (particle.size * groupParticleSize * (isSelected ? 1.18 : 1)) / 2);
+
+            gpuParticleItems[offset] = particle.x;
+            gpuParticleItems[offset + 1] = particle.y;
+            gpuParticleItems[offset + 2] = radius;
+            gpuParticleItems[offset + 3] = groupLineWidth;
+            gpuParticleItems[offset + 4] = fillColor[0] / 255;
+            gpuParticleItems[offset + 5] = fillColor[1] / 255;
+            gpuParticleItems[offset + 6] = fillColor[2] / 255;
+            gpuParticleItems[offset + 7] = alpha;
+            gpuParticleItems[offset + 8] = strokeColor[0] / 255;
+            gpuParticleItems[offset + 9] = strokeColor[1] / 255;
+            gpuParticleItems[offset + 10] = strokeColor[2] / 255;
+            gpuParticleItems[offset + 11] = alpha;
+            offset += floatsPerParticle;
+          }
+
+          gpuParticleRenderer.render(gpuParticleItems.subarray(0, requiredLength), particles.length, p.width, p.height);
+          const context = p.drawingContext as CanvasRenderingContext2D;
+          context.drawImage(gpuParticleRenderer.canvas, 0, 0, p.width, p.height);
+          return true;
         }
 
         function buildSvgExport() {
