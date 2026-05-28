@@ -246,6 +246,13 @@ type GpuParticleRenderer = {
   resize: (width: number, height: number) => void;
 };
 
+type RenderStyle = {
+  particleSize: number;
+  lineWidth: number;
+  fillRgb: number[];
+  strokeRgb: number[];
+};
+
 let h264EncoderLoader: Promise<H264EncoderFactory> | null = null;
 
 function getPublicAssetUrl(path: string) {
@@ -583,6 +590,7 @@ export default function LivingDrawingTool() {
         let canvasElement: HTMLCanvasElement | null = null;
         let gpuParticleRenderer: GpuParticleRenderer | null = null;
         let gpuParticleItems = new Float32Array(0);
+        const groupStyleCache = new Map<number, RenderStyle>();
         let exportCanvasElement: HTMLCanvasElement | null = null;
         let exportCanvasContext: CanvasRenderingContext2D | null = null;
         let recordingFrameTimer: number | null = null;
@@ -1579,10 +1587,15 @@ export default function LivingDrawingTool() {
         function updateParticles() {
           const mouse = isPointerDown ? pressurePoint : { x: p.mouseX, y: p.mouseY };
           const isAttracting = isPointerDown && toolModeRef.current === "attract";
+          const interactionRadiusSq = CONFIG.interactionRadius * CONFIG.interactionRadius;
+          let hasActiveMotion = isAttracting || isPointerDown;
 
           for (const particle of particles) {
             if (isAttracting) {
-              const d = p.dist(mouse.x, mouse.y, particle.x, particle.y);
+              const dx = mouse.x - particle.x;
+              const dy = mouse.y - particle.y;
+              const distanceSq = dx * dx + dy * dy;
+              const d = distanceSq < interactionRadiusSq ? Math.sqrt(distanceSq) : CONFIG.interactionRadius + 1;
               const near = 1 - smoothstep(0, CONFIG.interactionRadius, d);
               if (near > 0.02) {
                 particle.state = mode;
@@ -1593,7 +1606,20 @@ export default function LivingDrawingTool() {
                 applyReturnForce(particle, 0.45);
               }
             } else {
-              particle.state = particle.state === "returning" ? "returning" : "stable";
+              const homeDx = particle.homeX - particle.x;
+              const homeDy = particle.homeY - particle.y;
+              const speed = Math.abs(particle.vx) + Math.abs(particle.vy);
+              const homeDistanceSq = homeDx * homeDx + homeDy * homeDy;
+              if (homeDistanceSq < 0.1225 && speed < 0.08) {
+                particle.x = particle.homeX;
+                particle.y = particle.homeY;
+                particle.vx = 0;
+                particle.vy = 0;
+                particle.state = "stable";
+                continue;
+              }
+              hasActiveMotion = true;
+              particle.state = "returning";
               applyReturnForce(particle, 1);
             }
 
@@ -1606,34 +1632,30 @@ export default function LivingDrawingTool() {
           if (isAttracting && mode === "attracted") {
             applyParticleCollisions(mouse.x, mouse.y);
           }
-          applyInterGroupCollisions();
-
-          for (const particle of particles) {
-            const homeDistance = p.dist(particle.x, particle.y, particle.homeX, particle.homeY);
-            if (!isPointerDown && homeDistance < 0.35 && Math.abs(particle.vx) + Math.abs(particle.vy) < 0.08) {
-              particle.x = particle.homeX;
-              particle.y = particle.homeY;
-              particle.state = "stable";
-            }
+          if (hasActiveMotion) {
+            applyInterGroupCollisions();
           }
+
         }
 
         function drawParticles() {
           if (drawParticlesWithWebGpu()) return;
 
           p.blendMode(p.BLEND);
+          const styles = makeGroupStyleCache();
+          const selectedIds = selectedGroupIdsRef.current;
 
           for (let i = 0; i < particles.length; i += 1) {
             const particle = particles[i];
-            const fillColor = getParticleFillColor(particle);
-            const strokeColor = getParticleStrokeColor(particle);
-            const speed = Math.min(1, p.dist(0, 0, particle.vx, particle.vy) / 9);
-            const isSelected = Boolean(particle.groupId && selectedGroupIdsRef.current.includes(particle.groupId));
+            const style = particle.groupId ? styles.get(particle.groupId) : null;
+            const fillColor = particle.rgb ?? style?.fillRgb ?? hexToRgb(particleColorRef.current);
+            const strokeColor = style?.strokeRgb ?? hexToRgb(lineColorRef.current);
+            const speed = Math.min(1, Math.hypot(particle.vx, particle.vy) / 9);
+            const isSelected = Boolean(particle.groupId && selectedIds.includes(particle.groupId));
             const alpha = isSelected ? 255 : 225 + speed * 20;
 
-            const group = getGroupForParticle(particle);
-            const groupParticleSize = group?.particleSize ?? particleSizeRef.current;
-            const groupLineWidth = group?.lineWidth ?? lineWidthRef.current;
+            const groupParticleSize = style?.particleSize ?? particleSizeRef.current;
+            const groupLineWidth = style?.lineWidth ?? lineWidthRef.current;
             const diameter = Math.max(1, particle.size * groupParticleSize * (isSelected ? 1.18 : 1));
             p.strokeWeight(groupLineWidth);
             p.stroke(strokeColor[0], strokeColor[1], strokeColor[2], alpha);
@@ -1653,17 +1675,19 @@ export default function LivingDrawingTool() {
             gpuParticleItems = new Float32Array(requiredLength);
           }
 
+          const styles = makeGroupStyleCache();
+          const selectedIds = selectedGroupIdsRef.current;
           let offset = 0;
           for (let i = 0; i < particles.length; i += 1) {
             const particle = particles[i];
-            const fillColor = getParticleFillColor(particle);
-            const strokeColor = getParticleStrokeColor(particle);
-            const speed = Math.min(1, p.dist(0, 0, particle.vx, particle.vy) / 9);
-            const isSelected = Boolean(particle.groupId && selectedGroupIdsRef.current.includes(particle.groupId));
+            const style = particle.groupId ? styles.get(particle.groupId) : null;
+            const fillColor = particle.rgb ?? style?.fillRgb ?? hexToRgb(particleColorRef.current);
+            const strokeColor = style?.strokeRgb ?? hexToRgb(lineColorRef.current);
+            const speed = Math.min(1, Math.hypot(particle.vx, particle.vy) / 9);
+            const isSelected = Boolean(particle.groupId && selectedIds.includes(particle.groupId));
             const alpha = (isSelected ? 255 : 225 + speed * 20) / 255;
-            const group = getGroupForParticle(particle);
-            const groupParticleSize = group?.particleSize ?? particleSizeRef.current;
-            const groupLineWidth = group?.lineWidth ?? lineWidthRef.current;
+            const groupParticleSize = style?.particleSize ?? particleSizeRef.current;
+            const groupLineWidth = style?.lineWidth ?? lineWidthRef.current;
             const radius = Math.max(0.5, (particle.size * groupParticleSize * (isSelected ? 1.18 : 1)) / 2);
 
             gpuParticleItems[offset] = particle.x;
@@ -1949,19 +1973,23 @@ export default function LivingDrawingTool() {
         }
 
         function applyParticleCollisions(centerX: number, centerY: number) {
-          const activeParticles = particles.filter(
-            (particle) => p.dist(centerX, centerY, particle.x, particle.y) < CONFIG.interactionRadius,
-          );
-          if (activeParticles.length < 2) return;
+          const collisionParticles: Particle[] = [];
+          const interactionRadiusSq = CONFIG.interactionRadius * CONFIG.interactionRadius;
+          for (let i = particles.length - 1; i >= 0 && collisionParticles.length < CONFIG.collisionMaxChecks; i -= 1) {
+            const particle = particles[i];
+            const dx = centerX - particle.x;
+            const dy = centerY - particle.y;
+            if (dx * dx + dy * dy < interactionRadiusSq) collisionParticles.push(particle);
+          }
+          if (collisionParticles.length < 2) return;
 
-          const collisionParticles = activeParticles.slice(-CONFIG.collisionMaxChecks);
           const grid = new Map<string, Particle[]>();
           const cellSize = CONFIG.collisionCellSize;
 
           for (const particle of collisionParticles) {
             const cellX = Math.floor(particle.x / cellSize);
             const cellY = Math.floor(particle.y / cellSize);
-            const key = `${cellX},${cellY}`;
+            const key = makeCollisionKey(cellX, cellY);
             const cell = grid.get(key);
             if (cell) {
               cell.push(particle);
@@ -1975,7 +2003,7 @@ export default function LivingDrawingTool() {
             const cellY = Math.floor(particle.y / cellSize);
             for (let y = cellY - 1; y <= cellY + 1; y += 1) {
               for (let x = cellX - 1; x <= cellX + 1; x += 1) {
-                const cell = grid.get(`${x},${y}`);
+                const cell = grid.get(makeCollisionKey(x, y));
                 if (!cell) continue;
                 for (const other of cell) {
                   if (other === particle || other.seed < particle.seed) continue;
@@ -1989,7 +2017,10 @@ export default function LivingDrawingTool() {
         function applyInterGroupCollisions() {
           if (particles.length < 2) return;
 
-          const collisionParticles = particles.slice(-CONFIG.interGroupCollisionMaxChecks);
+          const collisionParticles =
+            particles.length > CONFIG.interGroupCollisionMaxChecks
+              ? particles.slice(-CONFIG.interGroupCollisionMaxChecks)
+              : particles;
           const grid = new Map<string, Particle[]>();
           const cellSize = CONFIG.collisionCellSize;
 
@@ -1997,7 +2028,7 @@ export default function LivingDrawingTool() {
             if (!particle.groupId) continue;
             const cellX = Math.floor(particle.x / cellSize);
             const cellY = Math.floor(particle.y / cellSize);
-            const key = `${cellX},${cellY}`;
+            const key = makeCollisionKey(cellX, cellY);
             const cell = grid.get(key);
             if (cell) {
               cell.push(particle);
@@ -2012,7 +2043,7 @@ export default function LivingDrawingTool() {
             const cellY = Math.floor(particle.y / cellSize);
             for (let y = cellY - 1; y <= cellY + 1; y += 1) {
               for (let x = cellX - 1; x <= cellX + 1; x += 1) {
-                const cell = grid.get(`${x},${y}`);
+                const cell = grid.get(makeCollisionKey(x, y));
                 if (!cell) continue;
                 for (const other of cell) {
                   if (other === particle || other.seed < particle.seed || other.groupId === particle.groupId) continue;
@@ -2021,6 +2052,10 @@ export default function LivingDrawingTool() {
               }
             }
           }
+        }
+
+        function makeCollisionKey(cellX: number, cellY: number) {
+          return `${cellX}:${cellY}`;
         }
 
         function resolveParticleCollision(a: Particle, b: Particle, strength: number) {
@@ -2509,6 +2544,19 @@ export default function LivingDrawingTool() {
         function getGroupForParticle(particle: Particle) {
           if (!particle.groupId) return null;
           return groups.find((item) => item.id === particle.groupId) ?? null;
+        }
+
+        function makeGroupStyleCache() {
+          groupStyleCache.clear();
+          for (const group of groups) {
+            groupStyleCache.set(group.id, {
+              particleSize: group.particleSize,
+              lineWidth: group.lineWidth,
+              fillRgb: hexToRgb(group.color),
+              strokeRgb: hexToRgb(group.lineColor ?? lineColorRef.current),
+            });
+          }
+          return groupStyleCache;
         }
 
         function rebuildTextGroup(group: ObjectGroup) {
